@@ -38,7 +38,7 @@ Options:
   --dir DIR              Checkout location (default: ~/ARTEX)
   --ref REF              Branch or tag to clone (default: main)
   --bind ADDRESS         ARTEX_BIND_ADDR for a newly created .env
-                         (127.0.0.1, ::1, localhost, 0.0.0.0, or ::)
+                         (127.0.0.1 or 0.0.0.0)
   --update               Fast-forward a clean, existing checkout on --ref
   --skip-docker-install  Fail if a usable Docker Engine + Compose v2 is absent
   --no-start             Install/configure only; do not build or start ARTEX
@@ -96,12 +96,12 @@ require_ubuntu_2404() {
 
 validate_bind_address() {
   case "$BIND_ADDR" in
-    127.0.0.1|::1|localhost|0.0.0.0|::) ;;
-    *) die "--bind must be one of: 127.0.0.1, ::1, localhost, 0.0.0.0, ::" ;;
+    127.0.0.1|0.0.0.0) ;;
+    *) die "--bind must be either 127.0.0.1 or 0.0.0.0; ARTEX's current Compose port mapping is IPv4-only" ;;
   esac
 
   case "$BIND_ADDR" in
-    0.0.0.0|::)
+    0.0.0.0)
       warn "ARTEX will be reachable beyond localhost. Docker-published ports can bypass ordinary UFW rules."
       warn "Put ARTEX behind an authenticated TLS reverse proxy before exposing it publicly."
       ;;
@@ -146,6 +146,14 @@ ensure_docker() {
     print_command sudo install -m 0755 -d /etc/apt/keyrings
     print_command curl --proto '=https' --tlsv1.2 -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc
     print_command sudo install -m 0644 /tmp/docker.asc /etc/apt/keyrings/docker.asc
+    printf '%s\n' "+ cat > /tmp/docker.sources <<'EOF'" \
+      'Types: deb' \
+      'URIs: https://download.docker.com/linux/ubuntu' \
+      'Suites: noble' \
+      'Components: stable' \
+      "Architectures: $(dpkg --print-architecture)" \
+      'Signed-By: /etc/apt/keyrings/docker.asc' \
+      'EOF'
     print_command sudo install -m 0644 /tmp/docker.sources /etc/apt/sources.list.d/docker.sources
     print_command sudo apt-get update
     print_command sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -167,7 +175,8 @@ ensure_docker() {
   info "Installing Docker Engine from Docker's official APT repository"
   local keyring=/etc/apt/keyrings/docker.asc
   local source_list=/etc/apt/sources.list.d/docker.sources
-  local temporary
+  local temporary architecture expected
+  architecture="$(dpkg --print-architecture)"
 
   run_sudo install -m 0755 -d /etc/apt/keyrings
   if [[ ! -s "$keyring" ]]; then
@@ -184,15 +193,21 @@ Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: noble
 Components: stable
-Architectures: $(dpkg --print-architecture)
+Architectures: $architecture
 Signed-By: $keyring
 EOF
     run_sudo install -m 0644 "$temporary" "$source_list"
     rm -f "$temporary"
   else
-    grep -Fqx "URIs: https://download.docker.com/linux/ubuntu" "$source_list" &&
-      grep -Fqx "Suites: noble" "$source_list" ||
-      die "existing Docker APT source is not the expected Ubuntu Noble source: $source_list"
+    for expected in \
+      "URIs: https://download.docker.com/linux/ubuntu" \
+      "Suites: noble" \
+      "Components: stable" \
+      "Architectures: $architecture" \
+      "Signed-By: $keyring"; do
+      grep -Fqx "$expected" "$source_list" ||
+        die "existing Docker APT source does not match the expected Ubuntu Noble configuration: $source_list"
+    done
     info "Reusing existing Docker APT source: $source_list"
   fi
 
@@ -283,6 +298,9 @@ prepare_environment() {
   local env_file="$INSTALL_DIR/.env"
   if [[ -f "$env_file" ]]; then
     info "Reusing existing .env without modification"
+    if grep -qx 'POSTGRES_PASSWORD=change-me-please' "$env_file"; then
+      warn "Existing .env still uses the example PostgreSQL password; change it before exposing ARTEX."
+    fi
     (( BIND_EXPLICIT == 0 )) ||
       warn "--bind was not applied because $env_file already exists"
   else
@@ -290,7 +308,6 @@ prepare_environment() {
       info "Would create a new .env with a generated PostgreSQL password and mode 0600"
       print_command cp "$INSTALL_DIR/.env.example" "$env_file"
       print_command chmod 0600 "$env_file"
-      run mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/keys"
       return
     fi
     [[ -f "$INSTALL_DIR/.env.example" ]] ||
@@ -305,10 +322,20 @@ prepare_environment() {
     chmod 0600 "$env_file"
     ok "Created $env_file with a generated PostgreSQL password"
   fi
+}
 
-  # These are bind-mounted runtime directories. mkdir -p leaves existing data
-  # and keys untouched.
-  run mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/keys"
+prepare_runtime_directories() {
+  local data_dir="$INSTALL_DIR/data"
+  local key_dir="$INSTALL_DIR/keys"
+  [[ ! -e "$data_dir" || -d "$data_dir" ]] ||
+    die "$data_dir exists but is not a directory"
+  [[ ! -e "$key_dir" || -d "$key_dir" ]] ||
+    die "$key_dir exists but is not a directory"
+
+  # These are bind-mounted runtime directories. Existing contents and
+  # permissions are left untouched; a newly created keys/ starts private.
+  [[ -e "$data_dir" ]] || run mkdir -p "$data_dir"
+  [[ -e "$key_dir" ]] || run install -d -m 0700 "$key_dir"
 }
 
 compose() {
@@ -332,12 +359,11 @@ start_artex() {
   compose up -d --build
   compose ps
 
-  local url="http://$BIND_ADDR:8787"
-  [[ "$BIND_ADDR" == "::1" ]] && url="http://[::1]:8787"
-  ok "ARTEX is starting at $url"
+  ok "ARTEX is starting at http://$BIND_ADDR:8787"
   info "Read the one-time setup token locally with:"
   printf '    cd %q && ' "$INSTALL_DIR"
-  print_command "${DOCKER_CMD[@]}" compose logs --no-color artex
+  printf '%q ' "${DOCKER_CMD[@]}" compose logs --no-color artex
+  printf '| grep -- %q\n' "Setup token"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -378,6 +404,7 @@ ensure_base_packages
 ensure_docker
 prepare_checkout
 prepare_environment
+prepare_runtime_directories
 start_artex
 
 if (( DOCKER_GROUP_ADDED )); then
