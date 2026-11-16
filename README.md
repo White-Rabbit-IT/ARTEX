@@ -289,6 +289,21 @@ The script detects or installs Docker, then offers **① all-Docker** (writes `.
 `docker compose up -d --build`) or **② local build and run** (generates `config.json`, builds the
 embedded binary, starts it).
 
+#### Ubuntu 24.04 LTS (Docker Engine)
+
+For a non-interactive, Ubuntu-specific Docker deployment, use the dedicated installer in this
+repository. It uses Docker's official APT repository, keeps the web UI bound to localhost by
+default, and refuses to overwrite an existing checkout or `.env`:
+
+```bash
+git clone https://github.com/White-Rabbit-IT/ARTEX.git
+cd ARTEX
+scripts/install-ubuntu-24.04.sh --dir "$PWD"
+```
+
+Pass `--help` to see the explicit `--update`, `--no-start`, and bind-address options. The
+installer never removes conflicting Docker packages automatically.
+
 Open **http://localhost:8787**; `/setup` asks for the one-time setup token printed at startup
 (`docker compose logs artex | grep "Setup token"`).
 
