@@ -272,11 +272,19 @@ prepare_checkout() {
   if (( UPDATE_EXISTING )); then
     [[ -z "$(git -C "$INSTALL_DIR" status --porcelain)" ]] ||
       die "$INSTALL_DIR has local changes; review or commit them before using --update"
-    run git -C "$INSTALL_DIR" fetch --prune --tags origin
-    run git -C "$INSTALL_DIR" checkout "$REF"
+    # A depth-1 clone made with --branch normally fetches only that branch.
+    # Fetch all heads explicitly so --update --ref can change to another
+    # remote branch as documented; tags remain supported too.
+    run git -C "$INSTALL_DIR" fetch --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
     if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+      if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$REF"; then
+        run git -C "$INSTALL_DIR" checkout "$REF"
+      else
+        run git -C "$INSTALL_DIR" checkout -b "$REF" "origin/$REF"
+      fi
       run git -C "$INSTALL_DIR" pull --ff-only origin "$REF"
     else
+      run git -C "$INSTALL_DIR" checkout --detach "$REF"
       info "Checked out immutable ref $REF; no pull was performed"
     fi
     ok "Updated existing checkout at $INSTALL_DIR"
