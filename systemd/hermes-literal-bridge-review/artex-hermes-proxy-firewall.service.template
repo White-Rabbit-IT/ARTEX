@@ -8,9 +8,9 @@ Requires=docker.service
 [Service]
 Type=oneshot
 # The eventual helper must rediscover the exact ARTEX bridge/container values,
-# reject ambiguity, and manage only its own INPUT chain for TCP 8645.
+# reject ambiguity, and manage only its own INPUT chain for TCP 864.
 ExecStart=@ROOT_HELPER@ --apply
-ExecStop=@ROOT_HELPER@ --remove
+ExecStop=@ROOT_HELPER@ --remove --apply
 RemainAfterExit=yes
 NoNewPrivileges=yes
 PrivateTmp=yes

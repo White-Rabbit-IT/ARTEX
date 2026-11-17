@@ -1,0 +1,22 @@
+[Unit]
+Description=ARTEX literal-bridge firewall boundary (owner-reviewed only)
+After=docker.service
+Requires=docker.service
+BindsTo=docker.service
+Before=artex-hermes-subscription-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/artex-hermes-literal-bridge-firewall --project __ARTEX_PROJECT__ --apply
+ExecStop=/usr/local/libexec/artex-hermes-literal-bridge-firewall --project __ARTEX_PROJECT__ --remove --apply
+RemainAfterExit=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RuntimeDirectory=artex-hermes-literal-bridge
+RuntimeDirectoryMode=0755
+ReadWritePaths=/run/artex-hermes-literal-bridge /run/xtables.lock
+
+[Install]
+WantedBy=multi-user.target

@@ -82,11 +82,12 @@ jobs:
       # shellcheck is preinstalled on the ubuntu runners. -S warning: the scripts
       # currently have only info-level notes (intentional A && B || C chains in
       # update.sh, an unquoted glob in backup.sh's prune), so fail on warnings.
-      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh scripts/run-hermes-observer.sh scripts/test-hermes-observer.sh scripts/provision-hermes-observer.sh scripts/preflight-hermes-subscription-proxy.sh scripts/test-preflight-hermes-subscription-proxy.sh scripts/stage-hermes-literal-bridge-review.sh scripts/test-stage-hermes-literal-bridge-review.sh .github/scripts/bot.sh scripts/test-bot-context.sh
+      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh scripts/run-hermes-observer.sh scripts/test-hermes-observer.sh scripts/provision-hermes-observer.sh scripts/preflight-hermes-subscription-proxy.sh scripts/test-preflight-hermes-subscription-proxy.sh scripts/stage-hermes-literal-bridge-review.sh scripts/test-stage-hermes-literal-bridge-review.sh scripts/provision-hermes-literal-bridge.sh scripts/libexec/artex-hermes-literal-bridge-firewall.sh scripts/test-provision-hermes-literal-bridge.sh .github/scripts/bot.sh scripts/test-bot-context.sh
       - run: bash scripts/test-extract-changelog-section.sh
       - run: bash scripts/test-hermes-observer.sh
       - run: bash scripts/test-preflight-hermes-subscription-proxy.sh
       - run: bash scripts/test-stage-hermes-literal-bridge-review.sh
+      - run: bash scripts/test-provision-hermes-literal-bridge.sh
       # The triage bot's repository summary must expose every top-level
       # directory; a truncated file list once made it deny that docs/ and
       # scripts/benchmark/ exist.
@@ -108,6 +109,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run test:polling
       - run: npm run test:replay
+      - run: npm run test:task-create-target-gate
       - run: npm run build:static
 
   python:

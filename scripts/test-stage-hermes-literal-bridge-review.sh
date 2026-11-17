@@ -68,6 +68,15 @@ for expected in README.md artex-hermes-proxy-firewall.service.template artex-her
   [[ "$(stat -c '%a' -- "$STAGE_DIR/$expected")" == '644' ]] || fail "unexpected mode for: $expected"
 done
 [[ "$(stat -c '%a' -- "$STAGE_DIR")" == '700' ]] || fail 'stage directory did not retain mode 0700'
+grep -F -- 'preflight with `--port 864`' "$STAGE_DIR/README.md" >/dev/null || fail 'review README does not require the literal-bridge preflight port'
+grep -F -- 'TCP 864' "$STAGE_DIR/README.md" >/dev/null || fail 'review README does not describe the privileged bridge port'
+grep -F -- 'TCP 864' "$STAGE_DIR/artex-hermes-proxy-firewall.service.template" >/dev/null || fail 'firewall review template does not describe the privileged bridge port'
+grep -F -- 'ExecStop=@ROOT_HELPER@ --remove --apply' "$STAGE_DIR/artex-hermes-proxy-firewall.service.template" >/dev/null || fail 'firewall review template has a plan-only teardown'
+grep -F -- 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$STAGE_DIR/artex-hermes-subscription-proxy.service.template" >/dev/null || fail 'proxy review template lacks the minimum privileged-bind capability'
+grep -F -- 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' "$STAGE_DIR/artex-hermes-subscription-proxy.service.template" >/dev/null || fail 'proxy review template has no capability boundary'
+if grep -Fq -- '8645' "$STAGE_DIR/README.md" "$STAGE_DIR/artex-hermes-proxy-firewall.service.template" "$STAGE_DIR/artex-hermes-subscription-proxy.service.template"; then
+  fail 'staged review material retains the obsolete literal bridge port'
+fi
 
 before_sum="$(sha256sum -- "$STAGE_DIR"/* | sha256sum)"
 set +e

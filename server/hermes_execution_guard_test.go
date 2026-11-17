@@ -236,69 +236,88 @@ func TestHermesSubscriptionConnectionTestRejectsOutboundProxy(t *testing.T) {
 }
 
 func TestGenericProviderAtDocumentedHermesRouteIsRejectedBeforeAnyRequest(t *testing.T) {
-	for _, endpoint := range []struct {
+	for _, route := range []struct {
 		name string
-		h    http.HandlerFunc
-		path string
+		url  string
 	}{
-		{name: "connection test", h: (&Server{}).testLLM, path: "/api/llm/test"},
-		{name: "model listing", h: (&Server{}).pgListModels, path: "/api/llm/models"},
+		{name: "legacy port", url: "http://host.docker.internal:8645/v1"},
+		{name: "literal bridge port", url: "http://172.18.0.1:864/v1"},
 	} {
-		t.Run(endpoint.name, func(t *testing.T) {
-			payload, err := json.Marshal(map[string]any{
-				"provider": "openai", "model": "gpt-test", "base_url": "http://host.docker.internal:8645/v1",
-				"api_key": "cloud-key-that-must-not-leave",
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			req := httptest.NewRequest(http.MethodPost, endpoint.path, bytes.NewReader(payload))
-			rec := httptest.NewRecorder()
-			endpoint.h(rec, req)
-			var result struct {
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-				t.Fatal(err)
-			}
-			if rec.Code != http.StatusOK || result.OK || !strings.Contains(result.Error, "hermes-subscription") {
-				t.Fatalf("generic endpoint response status=%d result=%+v", rec.Code, result)
+		t.Run(route.name, func(t *testing.T) {
+			for _, endpoint := range []struct {
+				name string
+				h    http.HandlerFunc
+				path string
+			}{
+				{name: "connection test", h: (&Server{}).testLLM, path: "/api/llm/test"},
+				{name: "model listing", h: (&Server{}).pgListModels, path: "/api/llm/models"},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					payload, err := json.Marshal(map[string]any{
+						"provider": "openai", "model": "gpt-test", "base_url": route.url,
+						"api_key": "cloud-key-that-must-not-leave",
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					req := httptest.NewRequest(http.MethodPost, endpoint.path, bytes.NewReader(payload))
+					rec := httptest.NewRecorder()
+					endpoint.h(rec, req)
+					var result struct {
+						OK    bool   `json:"ok"`
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if rec.Code != http.StatusOK || result.OK || !strings.Contains(result.Error, "hermes-subscription") {
+						t.Fatalf("generic endpoint response status=%d result=%+v", rec.Code, result)
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestGenericProviderAtReservedHermesPortCannotBeSavedOrInstalled(t *testing.T) {
-	g := newGateServer(t)
-	const route = "http://host.docker.internal:8645/v1/chat/completions#fragment"
-	payload, err := json.Marshal(map[string]any{
-		"name": "must-not-save-generic-hermes-port", "format": "openai", "model": "gpt-test",
-		"base_url": route, "api_key": "cloud-key-that-must-not-leave", "streaming": false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/llm/profiles", bytes.NewReader(payload))
-	rec := httptest.NewRecorder()
-	g.s.pgSaveProfile(rec, req)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "hermes-subscription") {
-		t.Fatalf("generic reserved-port profile save status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	for _, route := range []struct {
+		name string
+		url  string
+	}{
+		{name: "legacy port", url: "http://host.docker.internal:8645/v1/chat/completions#fragment"},
+		{name: "literal bridge port", url: "http://172.18.0.1:864/v1/chat/completions#fragment"},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			g := newGateServer(t)
+			payload, err := json.Marshal(map[string]any{
+				"name": "must-not-save-generic-hermes-port", "format": "openai", "model": "gpt-test",
+				"base_url": route.url, "api_key": "cloud-key-that-must-not-leave", "streaming": false,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/llm/profiles", bytes.NewReader(payload))
+			rec := httptest.NewRecorder()
+			g.s.pgSaveProfile(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "hermes-subscription") {
+				t.Fatalf("generic reserved-port profile save status=%d body=%s", rec.Code, rec.Body.String())
+			}
 
-	// The legacy global configuration endpoint must make the same decision before
-	// it persists/replaces a runnable provider configuration.
-	payload, err = json.Marshal(map[string]any{
-		"provider": "openai", "model": "gpt-test", "base_url": route, "api_key": "cloud-key-that-must-not-leave",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req = httptest.NewRequest(http.MethodPost, "/api/llm", bytes.NewReader(payload))
-	rec = httptest.NewRecorder()
-	g.s.setLLM(rec, req)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "hermes-subscription") {
-		t.Fatalf("generic reserved-port legacy install status=%d body=%s", rec.Code, rec.Body.String())
+			// The legacy global configuration endpoint must make the same decision before
+			// it persists/replaces a runnable provider configuration.
+			payload, err = json.Marshal(map[string]any{
+				"provider": "openai", "model": "gpt-test", "base_url": route.url, "api_key": "cloud-key-that-must-not-leave",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req = httptest.NewRequest(http.MethodPost, "/api/llm", bytes.NewReader(payload))
+			rec = httptest.NewRecorder()
+			g.s.setLLM(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "hermes-subscription") {
+				t.Fatalf("generic reserved-port legacy install status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

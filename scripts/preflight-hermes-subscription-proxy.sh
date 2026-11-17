@@ -25,6 +25,7 @@ DEFAULT_PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 readonly DEFAULT_PROJECT_DIR
 
 PROJECT_DIR="$DEFAULT_PROJECT_DIR"
+PROXY_PORT='8645'
 BLOCKED=0
 
 info() { printf '[hermes-proxy-preflight] %s\n' "$*"; }
@@ -41,7 +42,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/preflight-hermes-subscription-proxy.sh [--project-dir DIR]
+  scripts/preflight-hermes-subscription-proxy.sh [--project-dir DIR] [--port PORT]
 
 Read-only safety preflight for a local Hermes Subscription Proxy used by the
 ARTEX Compose project. It records only nonsecret Docker topology metadata:
@@ -49,7 +50,11 @@ ARTEX Compose project. It records only nonsecret Docker topology metadata:
   - ARTEX's one attached network and its IPv4 gateway;
   - host.docker.internal resolution inside ARTEX;
   - counts of foreign-project containers on either relevant bridge;
-  - whether TCP port 8645 is already listening.
+  - whether the selected local TCP port is already listening.
+
+`--port` defaults to the legacy documented local route, TCP 8645. A reviewed
+literal-bridge plan can pass its distinct port (currently TCP 864) for the same
+read-only listener check. This script does not approve either binding.
 
 It does not run `hermes`, inspect ~/.hermes, read credentials, start a
 container, change a firewall, create an ARTEX LLM profile, or call a model.
@@ -71,6 +76,11 @@ while (($#)); do
       PROJECT_DIR="$2"
       shift 2
       ;;
+    --port)
+      (($# >= 2)) || die '--port requires a value'
+      PROXY_PORT="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -81,6 +91,8 @@ while (($#)); do
   esac
 done
 
+[[ "$PROXY_PORT" =~ ^[0-9]{1,5}$ ]] || die '--port must be a TCP port number'
+(( 10#$PROXY_PORT >= 1 && 10#$PROXY_PORT <= 65535 )) || die '--port must be in the range 1..65535'
 [[ -d "$PROJECT_DIR" ]] || die "project directory does not exist: $PROJECT_DIR"
 PROJECT_DIR="$(cd -- "$PROJECT_DIR" && pwd -P)"
 [[ -f "$PROJECT_DIR/docker-compose.yml" ]] || die "docker-compose.yml is missing from: $PROJECT_DIR"
@@ -216,13 +228,13 @@ else
   fi
 fi
 
-if ! listener_raw="$(ss -H -ltn 'sport = :8645' 2>/dev/null)"; then
-  die 'could not inspect TCP listener state for port 8645'
+if ! listener_raw="$(ss -H -ltn "sport = :$PROXY_PORT" 2>/dev/null)"; then
+  die "could not inspect TCP listener state for port $PROXY_PORT"
 fi
 mapfile -t LISTENER_ROWS < <(printf '%s\n' "$listener_raw" | sed '/^$/d')
-info "tcp_8645_listener_count=${#LISTENER_ROWS[@]}"
+info "tcp_${PROXY_PORT}_listener_count=${#LISTENER_ROWS[@]}"
 if ((${#LISTENER_ROWS[@]} > 0)); then
-  block 'TCP port 8645 is already listening; do not start or rebind a proxy until its owner and bind scope are reviewed'
+  block "TCP port $PROXY_PORT is already listening; do not start or rebind a proxy until its owner and bind scope are reviewed"
 fi
 
 if ((BLOCKED)); then
@@ -231,6 +243,6 @@ if ((BLOCKED)); then
   exit 2
 fi
 
-info "suggested_profile_base_url=http://$ARTEX_GATEWAY:8645/v1"
+info "suggested_profile_base_url=http://$ARTEX_GATEWAY:$PROXY_PORT/v1"
 info 'result=TOPOLOGY_REVIEW_REQUIRED'
 info 'next=Before any proxy start, verify the installed Hermes CLI flags, an allow-only bridge/firewall policy, active ARTEX work, and the public-or-synthetic route receipt. This script did not start or qualify a provider.'

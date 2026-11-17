@@ -3,6 +3,7 @@
 [Unit]
 Description=Hermes Subscription Proxy for a reviewed ARTEX bridge only
 Requires=artex-hermes-proxy-firewall.service
+BindsTo=artex-hermes-proxy-firewall.service
 After=artex-hermes-proxy-firewall.service network-online.target
 Wants=network-online.target
 
@@ -11,10 +12,13 @@ Type=simple
 User=__HERMES_LOGIN_OWNER__
 Group=__HERMES_LOGIN_OWNER__
 # Do not add ProtectHome=yes: Hermes OAuth state belongs to the ordinary user.
-ExecStart=__HERMES_BIN__ proxy start --provider nous --host __ARTEX_BRIDGE_GATEWAY__ --port 8645
+EnvironmentFile=/run/artex-hermes-literal-bridge/route.env
+ExecStart=__HERMES_BIN__ proxy start --provider nous --host ${ARTEX_HERMES_BRIDGE_GATEWAY} --port ${ARTEX_HERMES_PROXY_PORT}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 PrivateTmp=yes
 ProtectSystem=full
 

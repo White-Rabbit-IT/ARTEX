@@ -4,17 +4,27 @@ This guide configures a **local Hermes Subscription Proxy** as an ARTEX LLM
 profile. It does not put a Hermes OAuth token, OpenAI API key, or Portal MCP
 credential into ARTEX.
 
-The supported topology is deliberately private:
+> **Shared/multi-bridge hosts:** Do not use this older manual `:8645` example
+> to activate a new route. It cannot reserve listener ownership from an
+> unprivileged local process. For the ARTEX VPS topology, use the separately
+> reviewed, source-only
+> [literal-bridge provisioner](hermes-literal-bridge-provisioner.md), which
+> stages a privileged `:864` listener with the minimum bind capability and does
+> not activate it. The manual material below remains useful for understanding
+> ARTEX's profile format and for read-only preflight, not as a substitute for
+> that owner-reviewed deployment path.
+
+The reviewed topology is deliberately private:
 
 ```text
 ARTEX container
-  -> verified private Docker bridge route on :8645
+  -> verified private Docker bridge route on :864
   -> Hermes Subscription Proxy on this same host
   -> Hermes-owned authenticated subscription
 ```
 
 `docker-compose.yml` supplies `host.docker.internal:host-gateway` to the ARTEX
-container. It does **not** publish port 8645. That alias is only a candidate,
+container. It does **not** publish port 864. That alias is only a candidate,
 not proof of isolation: on a multi-bridge Docker host it can resolve to the
 default bridge instead of ARTEX's project bridge. Hermes' proxy has no separate
 inbound authentication, so a bad bind can expose a subscription-backed route to
@@ -39,22 +49,23 @@ with the ordinary user that will operate Hermes.
 From the ARTEX project directory, run:
 
 ```bash
-scripts/preflight-hermes-subscription-proxy.sh
+scripts/preflight-hermes-subscription-proxy.sh --port 864
 ```
 
 The helper is intentionally read-only. It does not start Hermes, read a Hermes
 login, change Docker or firewall state, make a provider request, create an
 ARTEX profile, or call a model. It checks the ARTEX network/gateway, resolves
 `host.docker.internal` from the container, counts containers from another
-Compose project on either relevant bridge, and checks whether TCP port 8645 is
+Compose project on either relevant bridge, and checks whether TCP port 864 is
 already in use.
 
-If it exits `2` or prints `result=BLOCKED`, stop. In particular, do not treat
-the current alias as safe when it resolves to a bridge shared by unrelated
-containers. Correct the Docker alias or bridge mapping itself, then re-run the
-preflight; an allow-only firewall policy is an additional later requirement,
-not a replacement for a passing alias check. Do not substitute a WireGuard or
-public address.
+If it exits `2` or prints `result=BLOCKED`, do not start a proxy or create an
+ARTEX profile from that alias. In particular, do not treat the current alias as
+safe when it resolves to a bridge shared by unrelated containers. For a
+single-bridge alias route, correct the Docker alias or bridge mapping itself
+and re-run the preflight. For the multi-bridge VPS topology, preserve that
+blocked alias receipt and use the literal-bridge provisioner below instead; do
+not substitute a WireGuard or public address.
 
 An exit status of `0` prints `result=TOPOLOGY_REVIEW_REQUIRED`; it means only
 that this static check found no condition it knows how to reject. It does not
@@ -70,58 +81,30 @@ bridge, do **not** point Hermes at that alias and do not paste a guessed private
 address into ARTEX. The `artex_network_gateway` line is diagnostic data, not an
 approval to use it.
 
-A host owner can instead separately review a literal ARTEX-bridge design. It
-has all of these properties at the time it is applied:
+Use the separately reviewed
+[literal-bridge provisioner](hermes-literal-bridge-provisioner.md) instead.
+It discovers the current literal bridge values at the time of application,
+uses a root-owned `iptables-nft` INPUT boundary, and reserves its listener on
+TCP 864 with only `CAP_NET_BIND_SERVICE` for the non-root Hermes process. It
+still requires separate owner approval before it can be enabled or receive a
+public/synthetic qualification request. Docker bridge names, gateway addresses,
+and container addresses can change after a Compose network is recreated; the
+route must be rediscovered and re-reviewed rather than reused.
 
-```text
-Hermes listener:    <current ARTEX bridge gateway>:8645
-ARTEX profile URL:  http://<current ARTEX bridge gateway>:8645/v1
-Allow rule:          source=<current ARTEX container IPv4>, input=<current ARTEX bridge>,
-                     destination=<current ARTEX bridge gateway>, tcp destination port=8645
-Drop rule:           every other input to <current ARTEX bridge gateway>:8645
-```
+## 2. Do not manually start a bridge listener
 
-The rules belong in the host **INPUT** path, not Docker's `FORWARD` path: a
-container connecting to a host-local bridge address terminates on the host. The
-allow must precede the drop. Bind only the literal bridge address; never
-`0.0.0.0`, a WireGuard address, or a public address.
+The former manual `hermes proxy start ... :8645` recipe is retired for a shared
+or multi-bridge host. It could leave an unprivileged listener race and had no
+coordinated firewall lifecycle. Use the
+[literal-bridge provisioner](hermes-literal-bridge-provisioner.md) as the only
+reviewed deployment path for this topology. It stages units but still does not
+enable or start them; a later owner-approved activation must use its generated
+route, privileged port and systemd ordering.
 
-This is not a copy-and-paste firewall recipe. Docker bridge names, gateway
-addresses, and container addresses can change after a Compose network is
-recreated. The host owner must preserve the existing firewall configuration,
-use its established persistent firewall mechanism, re-run this preflight after
-each network recreation, and keep the rule scoped to this one port. ARTEX
-accepts a literal private IPv4 `/v1` endpoint for the explicit Hermes profile,
-but a literal URL alone does not establish the required isolation.
-
-## 2. Start the Hermes proxy locally
-
-Use the Subscription Proxy command supported by the installed Hermes CLI. The
-current Hermes documentation describes a command in this shape:
-
-```bash
-hermes proxy start --provider nous --host <verified-private-bridge-address> --port 8645
-```
-
-Before starting it, verify the flags for the installed version:
-
-```bash
-hermes proxy start --help
-```
-
-Run it as the Hermes-login owner. Do not give ARTEX access to `~/.hermes`, do
-not bind the proxy publicly, and do not add a Docker volume for Hermes auth.
-
-In a second terminal, verify only the local OpenAI-compatible surface from the
-ARTEX container:
-
-```bash
-docker compose exec artex curl -fsS http://<verified-private-bridge-address>:8645/v1/models
-```
-
-This is a local connectivity check. A successful response proves neither a
-model's context-window size nor the provider's retention, privacy, or tool-use
-policy.
+Do not give ARTEX access to `~/.hermes`, do not bind a proxy publicly, and do
+not add a Docker volume for Hermes auth. A local connectivity response would
+prove neither a model context window nor a provider's retention, privacy, or
+tool-use policy.
 
 ## 3. Create the ARTEX profile
 
@@ -130,7 +113,7 @@ In **System → LLM Profiles**, create a profile with these values:
 | Field | Value |
 | --- | --- |
 | Format | `Hermes Subscription Proxy (local, OAuth held by Hermes)` |
-| Base URL | The exact private `/v1` URL from the non-blocked preflight, after firewall review |
+| Base URL | The exact private `/v1` URL from the owner-approved literal-bridge route, after firewall review |
 | Model | Select an exact ID returned by **Load models** |
 | API Key | Leave empty — ARTEX ignores and clears it for this format |
 | ARTEX LLM proxy | Leave empty — Hermes is direct-only and rejects it |
@@ -147,8 +130,9 @@ than the OpenAI-compatible `/v1` root.
 Use this explicit format, not a generic `OpenAI` profile pointed at the
 verified local `/v1` route. ARTEX rejects that known
 misconfiguration before it can fall back to a saved or environment API key. The
-entire local port `8645` is reserved for this Hermes integration; changing the
-path, query string, or URL fragment does not make it a generic-provider route.
+local ports `864` and legacy `8645` are reserved for this Hermes integration;
+changing the path, query string, or URL fragment does not make them a
+generic-provider route.
 An endpoint URL alone cannot prove what local service owns a custom port, so a
 Hermes proxy moved to another port must still be configured with the explicit
 `Hermes Subscription Proxy` format.

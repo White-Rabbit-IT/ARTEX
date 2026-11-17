@@ -45,36 +45,59 @@ func TestHermesSubscriptionConfigIsKeylessAndLocalOnly(t *testing.T) {
 }
 
 func TestDocumentedHermesEndpointRequiresExplicitHermesFormat(t *testing.T) {
-	const route = "http://host.docker.internal:8645/v1"
-	if !IsDocumentedHermesSubscriptionBaseURL(route) {
-		t.Fatal("documented Hermes default route was not recognized")
-	}
-	for _, raw := range []string{
-		"http://host.docker.internal:8645/v1?ignored=1",
-		"http://host.docker.internal:8645/v1/chat/completions#fragment",
-		"http://host.docker.internal:8645/alternate-openai-path",
-		"http://ignored-user@host.docker.internal:8645/v1",
-		"http://host.docker.internal.:8645/v1",
-		"http://host.docker.internal:08645/v1",
+	for _, tc := range []struct {
+		name      string
+		route     string
+		obscured  []string
+	}{
+		{
+			name:  "legacy port",
+			route: "http://host.docker.internal:8645/v1",
+			obscured: []string{
+				"http://host.docker.internal:8645/v1?ignored=1",
+				"http://host.docker.internal:8645/v1/chat/completions#fragment",
+				"http://host.docker.internal:8645/alternate-openai-path",
+				"http://ignored-user@host.docker.internal:8645/v1",
+				"http://host.docker.internal.:8645/v1",
+				"http://host.docker.internal:08645/v1",
+			},
+		},
+		{
+			name:  "literal bridge port",
+			route: "http://172.18.0.1:864/v1",
+			obscured: []string{
+				"http://172.18.0.1:864/v1?ignored=1",
+				"http://172.18.0.1:864/v1/chat/completions#fragment",
+				"http://ignored-user@172.18.0.1:864/v1",
+				"http://172.18.0.1:0864/v1",
+			},
+		},
 	} {
-		if !IsDocumentedHermesSubscriptionBaseURL(raw) {
-			t.Fatalf("reserved Hermes port hidden by %q", raw)
-		}
-		if _, err := ConfigFrom("openai", "gpt-test", raw, "cloud-key-that-must-not-leave", "").NewProvider(); err == nil || !strings.Contains(err.Error(), "hermes-subscription") {
-			t.Fatalf("generic OpenAI profile at %q error=%v", raw, err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if !IsDocumentedHermesSubscriptionBaseURL(tc.route) {
+				t.Fatalf("documented Hermes route was not recognized: %q", tc.route)
+			}
+			for _, raw := range append([]string{tc.route}, tc.obscured...) {
+				if !IsDocumentedHermesSubscriptionBaseURL(raw) {
+					t.Fatalf("reserved Hermes port hidden by %q", raw)
+				}
+				if _, err := ConfigFrom("openai", "gpt-test", raw, "cloud-key-that-must-not-leave", "").NewProvider(); err == nil || !strings.Contains(err.Error(), "hermes-subscription") {
+					t.Fatalf("generic OpenAI profile at %q error=%v", raw, err)
+				}
+			}
+			if _, err := ConfigFrom("hermes-subscription", "openai/gpt-test", tc.route, "ignored", "").NewProvider(); err != nil {
+				t.Fatalf("explicit Hermes profile at documented route: %v", err)
+			}
+		})
 	}
 	if IsDocumentedHermesSubscriptionBaseURL("http://host.docker.internal:8646/v1") {
 		t.Fatal("unrelated local gateway port was misidentified as Hermes")
 	}
+	if IsDocumentedHermesSubscriptionBaseURL("http://172.18.0.1:863/v1") {
+		t.Fatal("unrelated literal-bridge gateway port was misidentified as Hermes")
+	}
 	if IsDocumentedHermesSubscriptionBaseURL("http://[::1") {
 		t.Fatal("malformed URL was misidentified as Hermes")
-	}
-	if _, err := ConfigFrom("openai", "gpt-test", route, "cloud-key-that-must-not-leave", "").NewProvider(); err == nil || !strings.Contains(err.Error(), "hermes-subscription") {
-		t.Fatalf("generic OpenAI profile at documented Hermes route error=%v", err)
-	}
-	if _, err := ConfigFrom("hermes-subscription", "openai/gpt-test", route, "ignored", "").NewProvider(); err != nil {
-		t.Fatalf("explicit Hermes profile at documented route: %v", err)
 	}
 }
 
@@ -175,10 +198,15 @@ func TestHermesSubscriptionFromEnvRequiresExplicitLocalRoute(t *testing.T) {
 func TestHermesSubscriptionFromEnvDoesNotTreatGenericOpenAIAsHermes(t *testing.T) {
 	t.Setenv("ARTEX_LLM_PROVIDER", "openai")
 	t.Setenv("ARTEX_LLM_MODEL", "gpt-test")
-	t.Setenv("ARTEX_LLM_BASE_URL", "http://host.docker.internal:8645/v1/chat/completions#fragment")
 	t.Setenv("OPENAI_API_KEY", "cloud-key-that-must-not-leave")
-	if _, ok := FromEnv(); ok {
-		t.Fatal("generic OpenAI environment config at documented Hermes route was accepted")
+	for _, baseURL := range []string{
+		"http://host.docker.internal:8645/v1/chat/completions#fragment",
+		"http://172.18.0.1:864/v1/chat/completions#fragment",
+	} {
+		t.Setenv("ARTEX_LLM_BASE_URL", baseURL)
+		if _, ok := FromEnv(); ok {
+			t.Fatalf("generic OpenAI environment config at documented Hermes route was accepted: %s", baseURL)
+		}
 	}
 }
 

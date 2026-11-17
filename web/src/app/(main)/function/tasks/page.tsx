@@ -37,6 +37,7 @@ import {
   TrashIcon,
   SaveIcon,
   SearchIcon,
+  ShieldCheckIcon,
   SlidersHorizontalIcon,
   StarIcon,
   TagsIcon,
@@ -3474,6 +3475,16 @@ function CreateTaskSheet({
                 onChange={(e) => setGoal(e.target.value)}
               />
             </div>
+            <Field>
+              <FieldLabel>Target approval gate</FieldLabel>
+              <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                <ShieldCheckIcon className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                <span>Required for every task created through this New task form</span>
+              </div>
+              <FieldDescription>
+                ARTEX creates this task with target approval enabled. A target-facing tool request enters the approval workflow unless an approved target pin already covers it. This first browser rollout does not permit disabling the gate here.
+              </FieldDescription>
+            </Field>
             <Field>
               <FieldLabel htmlFor="source-tasks">Linked tasks</FieldLabel>
               <SourceTaskPicker

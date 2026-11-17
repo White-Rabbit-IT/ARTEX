@@ -251,6 +251,50 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
   return query.toString();
 }
 
+export type CreateTaskInput = {
+  name?: string;
+  categoryId?: number;
+  description: string;
+  goal: string;
+  llmProfileIds?: number[];
+  llmRotate?: boolean;
+  sourceTaskIds?: string[];
+  companyIds?: number[];
+  timeoutSeconds?: number;
+  seedFirstIntent?: boolean;
+  planHeartbeatSeconds?: number;
+  coverageEnabled?: boolean;
+  interceptRules?: AssetInterceptRuleInput[];
+  credentials?: TaskCredentialInput[];
+};
+
+// The browser is deliberately stricter than the general HTTP API: every task
+// it creates persists the target approval gate before the server launches its
+// planner or workers. The gate controls target-facing tool requests; it does
+// not by itself replace task scope, tool policy, or other execution controls.
+// Other API clients retain the server's backwards-compatible opt-in behavior,
+// but the first ARTEX UI rollout never creates an ungated task by omission or
+// by a stale form value.
+export function createTaskPayload(input: CreateTaskInput) {
+  return {
+    name: input.name ?? "",
+    category_id: input.categoryId ?? null,
+    description: input.description,
+    goal: input.goal,
+    llm_profile_ids: input.llmProfileIds ?? [],
+    llm_rotate: input.llmRotate ?? false,
+    source_task_ids: input.sourceTaskIds ?? [],
+    company_ids: input.companyIds ?? [],
+    timeout_seconds: input.timeoutSeconds ?? 0,
+    seed_first_intent: input.seedFirstIntent ?? false,
+    plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = the backend normalizes to the default 600 (10min)
+    coverage_enabled: input.coverageEnabled ?? true, // on by default; false disables the asset coverage feature
+    target_gate: true, // browser tasks always require target approval before execution
+    intercept_rules: input.interceptRules ?? [], // task-level asset interception rules
+    credentials: input.credentials ?? [], // test accounts declared at creation; an empty password = the agent generates and records it (#3)
+  };
+}
+
 export const api = {
   // Backend application version (injected via ldflags at release, default "dev").
   health: () => get<{ ok: boolean; service: string; version: string; latest_version?: string }>("/health"),
@@ -267,38 +311,7 @@ export const api = {
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
-  createTask: (input: {
-    name?: string;
-    categoryId?: number;
-    description: string;
-    goal: string;
-    llmProfileIds?: number[];
-    llmRotate?: boolean;
-    sourceTaskIds?: string[];
-    companyIds?: number[];
-    timeoutSeconds?: number;
-    seedFirstIntent?: boolean;
-    planHeartbeatSeconds?: number;
-    coverageEnabled?: boolean;
-    interceptRules?: AssetInterceptRuleInput[];
-    credentials?: TaskCredentialInput[];
-  }) =>
-    post<Task>("/tasks", {
-      name: input.name ?? "",
-      category_id: input.categoryId ?? null,
-      description: input.description,
-      goal: input.goal,
-      llm_profile_ids: input.llmProfileIds ?? [],
-      llm_rotate: input.llmRotate ?? false,
-      source_task_ids: input.sourceTaskIds ?? [],
-      company_ids: input.companyIds ?? [],
-      timeout_seconds: input.timeoutSeconds ?? 0,
-      seed_first_intent: input.seedFirstIntent ?? false,
-      plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = the backend normalizes to the default 600 (10min)
-      coverage_enabled: input.coverageEnabled ?? true, // on by default; false disables the asset coverage feature
-      intercept_rules: input.interceptRules ?? [], // task-level asset interception rules
-      credentials: input.credentials ?? [], // test accounts declared at creation; an empty password = the agent generates and records it (#3)
-    }),
+  createTask: (input: CreateTaskInput) => post<Task>("/tasks", createTaskPayload(input)),
   // Creates ARTEX's fixed CAL-00 evidence/UI fixture. The endpoint accepts no
   // user-authored task material and is terminal/non-runnable by design.
   createSyntheticCalibration: () =>

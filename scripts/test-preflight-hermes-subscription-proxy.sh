@@ -89,17 +89,19 @@ chmod 0700 "$FAKE_BIN/docker"
 cat >"$FAKE_BIN/ss" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+expected="-H -ltn sport = :${PREFLIGHT_PORT:-8645}"
+[[ "$*" == "$expected" ]] || exit 64
 if [[ "${PREFLIGHT_LISTENER:-0}" == 1 ]]; then
-  printf 'LISTEN 0 4096 172.18.0.1:8645 0.0.0.0:*\n'
+  printf 'LISTEN 0 4096 172.18.0.1:%s 0.0.0.0:*\n' "${PREFLIGHT_PORT:-8645}"
 fi
 EOF
 chmod 0700 "$FAKE_BIN/ss"
 
 run_preflight() {
-  local scenario="$1" listener="$2" output status
+  local scenario="$1" listener="$2" port="${3:-8645}" output status
   set +e
-  output="$(PATH="$FAKE_BIN:$PATH" PREFLIGHT_FIXTURE="$scenario" PREFLIGHT_LISTENER="$listener" \
-    "$PREFLIGHT" --project-dir "$PROJECT_DIR" 2>&1)"
+  output="$(PATH="$FAKE_BIN:$PATH" PREFLIGHT_FIXTURE="$scenario" PREFLIGHT_LISTENER="$listener" PREFLIGHT_PORT="$port" \
+    "$PREFLIGHT" --project-dir "$PROJECT_DIR" --port "$port" 2>&1)"
   status=$?
   set -e
   printf '%s\n' "$output"
@@ -130,6 +132,14 @@ set -e
 [[ "$safe_output" == *'result=TOPOLOGY_REVIEW_REQUIRED'* ]] || fail 'safe fixture did not retain manual-review state'
 [[ "$safe_output" == *'suggested_profile_base_url=http://172.18.0.1:8645/v1'* ]] || fail 'safe fixture omitted literal candidate URL'
 
+set +e
+literal_output="$(run_preflight safe 0 864)"
+literal_status=$?
+set -e
+((literal_status == 0)) || fail "literal-bridge port preflight returned $literal_status, want 0"
+[[ "$literal_output" == *'tcp_864_listener_count=0'* ]] || fail 'literal-bridge fixture did not inspect TCP/864'
+[[ "$literal_output" == *'suggested_profile_base_url=http://172.18.0.1:864/v1'* ]] || fail 'literal-bridge fixture omitted TCP/864 candidate URL'
+
 # Docker Compose exec must not inherit the script's own stdin. This keeps a
 # safe `bash -s` diagnostic from feeding the rest of its script to the ARTEX
 # container, and verifies the no-BASH_SOURCE fallback used by that form.
@@ -148,5 +158,19 @@ set -e
 ((listener_status == 2)) || fail "existing listener returned $listener_status, want 2"
 [[ "$listener_output" == *'tcp_8645_listener_count=1'* ]] || fail 'listener fixture did not report port use'
 [[ "$listener_output" == *'result=BLOCKED'* ]] || fail 'existing listener was not blocked'
+
+set +e
+literal_listener_output="$(run_preflight safe 1 864)"
+literal_listener_status=$?
+set -e
+((literal_listener_status == 2)) || fail "literal-bridge listener returned $literal_listener_status, want 2"
+[[ "$literal_listener_output" == *'tcp_864_listener_count=1'* ]] || fail 'literal-bridge listener fixture did not report port use'
+
+set +e
+invalid_port_output="$(PATH="$FAKE_BIN:$PATH" "$PREFLIGHT" --project-dir "$PROJECT_DIR" --port 0 2>&1)"
+invalid_port_status=$?
+set -e
+((invalid_port_status == 2)) || fail "invalid port returned $invalid_port_status, want 2"
+[[ "$invalid_port_output" == *'range 1..65535'* ]] || fail 'invalid port did not explain refusal'
 
 printf 'test-preflight-hermes-subscription-proxy: PASS\n'

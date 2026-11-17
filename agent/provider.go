@@ -209,18 +209,27 @@ func ValidateHermesSubscriptionBaseURL(raw string) (string, error) {
 	return "", fmt.Errorf("hermes subscription proxy host must be localhost, a Docker host alias, or a private/loopback IP")
 }
 
-// IsDocumentedHermesSubscriptionBaseURL identifies the documented default
-// Hermes proxy port. Endpoint URLs have no cryptographic provider identity, so
+// IsDocumentedHermesSubscriptionBaseURL identifies the documented reserved
+// Hermes proxy ports. Endpoint URLs have no cryptographic provider identity, so
 // ARTEX cannot safely infer that an arbitrary private OpenAI-compatible service
 // is Hermes. It does recognize this reserved local route to prevent the common
 // configuration mistake of selecting generic OpenAI while pointing it at the
 // Hermes proxy, which could otherwise forward an API key to a keyless service.
 //
 // Non-default local OpenAI-compatible services remain supported as generic
-// providers on other ports. Port 8645 is reserved for Hermes in this fork;
-// operators who run Hermes on a custom port must select the explicit
+// providers on other ports. Port 8645 remains reserved for the legacy Hermes
+// route, and port 864 is reserved for the owner-reviewed literal-bridge route.
+// Operators who run Hermes on any other port must select the explicit
 // hermes-subscription format, because no endpoint-only heuristic is treated as
 // proof of Hermes identity.
+const legacyHermesSubscriptionPort = 8645
+
+const literalBridgeHermesSubscriptionPort = 864
+
+func isDocumentedHermesSubscriptionPort(port int) bool {
+	return port == legacyHermesSubscriptionPort || port == literalBridgeHermesSubscriptionPort
+}
+
 func IsDocumentedHermesSubscriptionBaseURL(raw string) bool {
 	// Do not normalize first. This is a rejection detector for generic formats,
 	// not the strict Hermes-profile validator: a query, fragment, or alternate
@@ -232,7 +241,7 @@ func IsDocumentedHermesSubscriptionBaseURL(raw string) bool {
 		return false
 	}
 	port, portErr := strconv.Atoi(u.Port())
-	if portErr != nil || !strings.EqualFold(u.Scheme, "http") || port != 8645 {
+	if portErr != nil || !strings.EqualFold(u.Scheme, "http") || !isDocumentedHermesSubscriptionPort(port) {
 		return false
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
