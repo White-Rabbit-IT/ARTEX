@@ -3714,7 +3714,7 @@ func (s *Server) settingsPayload() map[string]any {
 	return map[string]any{
 		// Process-start policy, exposed read-only so an operator can verify the
 		// deployed guard without treating it as another mutable UI switch.
-		"target_gate_required":    s.m.RequireTargetGate(),
+		"target_gate_required":     s.m.RequireTargetGate(),
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"llm_record":               s.m.LLMRecordEnabled(),
