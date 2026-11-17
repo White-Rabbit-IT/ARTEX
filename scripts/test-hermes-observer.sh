@@ -4,7 +4,11 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
+  printf 'could not resolve script directory\n' >&2
+  exit 1
+}
+readonly SCRIPT_DIR
 readonly SENDER="$SCRIPT_DIR/run-hermes-observer.sh"
 
 [[ -x "$SENDER" ]] || {
@@ -59,7 +63,8 @@ fi
 EOF
 chmod 0700 "$FAKE_HERMES"
 
-mkdir -p -m 0750 "$PENDING_DIR"
+mkdir -p -- "$PENDING_DIR"
+chmod 0750 -- "$PENDING_DIR"
 
 # Dry run must not create sender-owned state, a lock, or a delivery marker.
 DRY_STATE="$TEST_DIR/dry-state"
