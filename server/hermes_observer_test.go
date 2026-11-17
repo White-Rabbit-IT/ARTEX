@@ -276,11 +276,29 @@ func waitForHermesReceiptCount(t *testing.T, dir string, want int) []os.DirEntry
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(entries) == want {
-			return entries
+		receipts := make([]os.DirEntry, 0, len(entries))
+		for _, entry := range entries {
+			name := entry.Name()
+			// writeEvent publishes through a dot-prefixed temporary name. A
+			// directory snapshot can observe that valid intermediate state, but
+			// the host sender and this receipt-level test must see only the
+			// final event-*.json contract.
+			if !strings.HasPrefix(name, "event-") || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().IsRegular() {
+				receipts = append(receipts, entry)
+			}
+		}
+		if len(receipts) == want {
+			return receipts
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("want exactly %d receipt(s), got %d", want, len(entries))
+			t.Fatalf("want exactly %d published receipt(s), got %d (directory entries=%d)", want, len(receipts), len(entries))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
