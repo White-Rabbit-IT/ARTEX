@@ -28,6 +28,13 @@ results are written back into **two linked graphs**: one for what you know about
 for how the test is progressing. Every finding can carry the captured request and response that
 justify it, and every autonomous action passes through scope rules, approval gates and budgets.
 
+For an optional, local Hermes Subscription Proxy profile, read
+[the proxy guide](guides/hermes-subscription-proxy.md). On hosts where its
+read-only preflight blocks a shared Docker alias, the separate
+[literal-bridge staging guide](guides/hermes-literal-bridge-staging.md) can
+create non-deploying review material only; it does not start a proxy or change
+the host firewall.
+
 - **It explores, it doesn't chat.** Goal decomposition, intent dispatch, worker execution and
   write-back form a closed loop that keeps advancing until the goal is proven.
 - **Two graphs, one audit trail.** The shared asset graph says *what exists*; the per-task

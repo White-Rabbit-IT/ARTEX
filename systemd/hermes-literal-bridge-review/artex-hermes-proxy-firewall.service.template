@@ -1,0 +1,21 @@
+# REVIEW TEMPLATE ONLY. Do not install this file as a systemd unit.
+# @ROOT_HELPER@ is intentionally unresolved and is not provided by this release.
+[Unit]
+Description=Reviewed ARTEX-to-Hermes literal-bridge firewall boundary
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The eventual helper must rediscover the exact ARTEX bridge/container values,
+# reject ambiguity, and manage only its own INPUT chain for TCP 8645.
+ExecStart=@ROOT_HELPER@ --apply
+ExecStop=@ROOT_HELPER@ --remove
+RemainAfterExit=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

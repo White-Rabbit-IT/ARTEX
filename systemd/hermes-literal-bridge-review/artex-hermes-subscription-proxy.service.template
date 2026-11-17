@@ -1,0 +1,22 @@
+# REVIEW TEMPLATE ONLY. Do not install this file as a systemd unit.
+# Every __PLACEHOLDER__ must be derived and reviewed on the host at activation.
+[Unit]
+Description=Hermes Subscription Proxy for a reviewed ARTEX bridge only
+Requires=artex-hermes-proxy-firewall.service
+After=artex-hermes-proxy-firewall.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__HERMES_LOGIN_OWNER__
+Group=__HERMES_LOGIN_OWNER__
+# Do not add ProtectHome=yes: Hermes OAuth state belongs to the ordinary user.
+ExecStart=__HERMES_BIN__ proxy start --provider nous --host __ARTEX_BRIDGE_GATEWAY__ --port 8645
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target
