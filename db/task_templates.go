@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -57,6 +58,14 @@ type TaskTemplatePatch struct {
 	SetCategoryID     bool
 	InterceptRules    []TaskInterceptRuleInput
 	SetInterceptRules bool
+}
+
+// EnsureTaskTemplatesResult reports the reusable templates selected by an
+// idempotent bootstrap operation. CreatedCount counts only rows inserted by
+// this call; pre-existing matching same-name templates are returned unchanged.
+type EnsureTaskTemplatesResult struct {
+	Templates    []*TaskTemplate
+	CreatedCount int
 }
 
 const taskTemplateCols = `id, name, nkey, description, goal, category_id, intercept_rules, created_at, updated_at`
@@ -182,6 +191,92 @@ RETURNING `+taskTemplateCols, in.Name, nkey, in.Description, in.Goal, in.Categor
 		return nil, err
 	}
 	return &t, nil
+}
+
+// EnsureTaskTemplates creates each reusable preset at most once. It only reads
+// and writes task_templates: it does not create a task, exploration, activity,
+// asset, provider call, or engine work. A pre-existing same-name template must
+// have equivalent normalized content; a different user template is never
+// overwritten or represented as this preset.
+func (d *DB) EnsureTaskTemplates(inputs []TaskTemplateInput) (*EnsureTaskTemplatesResult, error) {
+	type preparedTemplate struct {
+		input     TaskTemplateInput
+		nkey      string
+		rulesJSON []byte
+	}
+	prepared := make([]preparedTemplate, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		normalized, nkey, err := normalizeTaskTemplateInput(input)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[nkey]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate template name %q", ErrTaskTemplateInvalid, normalized.Name)
+		}
+		seen[nkey] = struct{}{}
+		rulesJSON, err := marshalTemplateRules(normalized.InterceptRules)
+		if err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, preparedTemplate{input: normalized, nkey: nkey, rulesJSON: rulesJSON})
+	}
+
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // a successful commit makes this a no-op
+
+	// The fixed lock protects a first bootstrap call from racing another caller.
+	// It is internal only: none of the names or content comes from the request.
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, "artex-task-template-bootstrap:v1"); err != nil {
+		return nil, fmt.Errorf("lock task template bootstrap: %w", err)
+	}
+
+	result := &EnsureTaskTemplatesResult{Templates: make([]*TaskTemplate, 0, len(prepared))}
+	for _, spec := range prepared {
+		template, err := scanTaskTemplate(tx.QueryRow(`
+INSERT INTO task_templates(name, nkey, description, goal, category_id, intercept_rules)
+VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (nkey) DO NOTHING
+RETURNING `+taskTemplateCols,
+			spec.input.Name, spec.nkey, spec.input.Description, spec.input.Goal, spec.input.CategoryID, spec.rulesJSON,
+		))
+		created := err == nil
+		if err == sql.ErrNoRows {
+			template, err = scanTaskTemplate(tx.QueryRow(`SELECT `+taskTemplateCols+` FROM task_templates WHERE nkey=$1`, spec.nkey))
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !taskTemplateMatchesInput(template, spec.input, spec.rulesJSON) {
+			return nil, fmt.Errorf("%w: existing template %q differs from required preset", ErrTaskTemplateNameConflict, spec.input.Name)
+		}
+		if created {
+			result.CreatedCount++
+		}
+		result.Templates = append(result.Templates, &template)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func taskTemplateMatchesInput(template TaskTemplate, input TaskTemplateInput, expectedRules []byte) bool {
+	if template.Name != input.Name || template.Description != input.Description || template.Goal != input.Goal {
+		return false
+	}
+	if (template.CategoryID == nil) != (input.CategoryID == nil) {
+		return false
+	}
+	if template.CategoryID != nil && *template.CategoryID != *input.CategoryID {
+		return false
+	}
+	actualRules, err := marshalTemplateRules(template.InterceptRules)
+	return err == nil && bytes.Equal(actualRules, expectedRules)
 }
 
 // ListTaskTemplates returns the most recently maintained templates first.

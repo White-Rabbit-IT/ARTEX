@@ -73,6 +73,7 @@ import type {
   NotificationMeta,
   PromptVar,
   PromptVersion,
+  ResearchWorkflowTemplatesResult,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -308,6 +309,9 @@ export const api = {
       already_present: boolean;
       task: Task;
     }>("/calibration/synthetic"),
+  // Creates fixed reusable preparation templates only. This endpoint never
+  // creates a task or dispatches an agent, provider, tool, or target request.
+  createResearchWorkflowTemplates: () => post<ResearchWorkflowTemplatesResult>("/research-workflow-templates"),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),

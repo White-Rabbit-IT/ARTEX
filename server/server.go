@@ -761,6 +761,9 @@ func (s *Server) Handler() http.Handler {
 	// CAL-00 is intentionally distinct from normal task admission: it creates
 	// one terminal, non-runnable UI/provenance fixture and never launches work.
 	mux.HandleFunc("POST /api/calibration/synthetic", s.createSyntheticCalibration)
+	// Research workflow templates are reusable planning presets. This route is
+	// intentionally distinct from normal task admission and cannot launch work.
+	mux.HandleFunc("POST /api/research-workflow-templates", s.createResearchWorkflowTemplates)
 	mux.HandleFunc("GET /api/skill-gaps", s.skillGaps)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)

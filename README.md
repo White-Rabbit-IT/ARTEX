@@ -359,6 +359,20 @@ It is a persisted read-only system record: it can be inspected but cannot be edi
 deleted, chatted with, or admitted to an agent. The action is authenticated and idempotent. See [the CAL-00 guide](guides/synthetic-calibration.md)
 for the precise UI evidence and limitations.
 
+### Safe research workflow templates
+
+Before creating a normal engagement, use **Tasks → Safe research templates** to
+install four fixed planning presets for authorized intake, local source study,
+isolated local validation, and evidence/novelty review. This authenticated,
+idempotent action writes reusable template rows only: it does not create a task,
+call an LLM, execute a tool, send traffic, configure a provider, or contact a
+target. Choosing a template later only copies its text into the ordinary task
+form; it does not authorize or start that task. If a user-owned template has
+one of the reserved names but different content, ARTEX returns a conflict and
+does not overwrite it or leave a partial set. See [the safe workflow template
+guide](guides/research-workflow-templates.md) for the exact records, conflict
+behavior, and pre-task boundary.
+
 ### Option 2: Docker Compose (manual)
 
 ```bash

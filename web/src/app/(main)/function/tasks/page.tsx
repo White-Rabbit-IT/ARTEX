@@ -22,6 +22,7 @@ import {
   ArrowUpDownIcon,
   ArrowUpIcon,
   ChevronRightIcon,
+  ClipboardCheckIcon,
   EyeIcon,
   FolderInputIcon,
   GripVerticalIcon,
@@ -327,6 +328,8 @@ export default function TasksPage() {
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
   const [creatingSyntheticCalibration, setCreatingSyntheticCalibration] = React.useState(false);
+  const [creatingResearchWorkflowTemplates, setCreatingResearchWorkflowTemplates] = React.useState(false);
+  const [templateReloadKey, setTemplateReloadKey] = React.useState(0);
 
   React.useEffect(() => {
     const raw = getLocalStorageValue(TASK_FILTER_PREFERENCE_KEY);
@@ -521,6 +524,25 @@ export default function TasksPage() {
       setCreatingSyntheticCalibration(false);
     }
   }, [creatingSyntheticCalibration, refreshCategoriesAndTasks]);
+
+  const createResearchWorkflowTemplates = React.useCallback(async () => {
+    if (creatingResearchWorkflowTemplates) return;
+    setCreatingResearchWorkflowTemplates(true);
+    try {
+      const result = await api.createResearchWorkflowTemplates();
+      setTemplateReloadKey((current) => current + 1);
+      toast.success(
+        result.created_count === 0
+          ? "Safe research workflow templates are already available"
+          : `Created ${result.created_count} safe research workflow template${result.created_count === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      toast.error(`Safe research workflow templates failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setCreatingResearchWorkflowTemplates(false);
+    }
+  }, [creatingResearchWorkflowTemplates]);
 
   const applyTaskCategoryMove = React.useCallback(
     (taskID: string, category: TaskCategory | null) => {
@@ -940,9 +962,14 @@ export default function TasksPage() {
                 creating={creatingSyntheticCalibration}
                 onCreate={createSyntheticCalibration}
               />
+              <ResearchWorkflowTemplatesDialog
+                creating={creatingResearchWorkflowTemplates}
+                onCreate={createResearchWorkflowTemplates}
+              />
               <CreateTaskSheet
                 tasks={tasks}
                 categories={categories}
+                templateReloadKey={templateReloadKey}
                 onCreated={refreshCategoriesAndTasks}
                 onCategoriesChanged={refreshCategoriesAndTasks}
               />
@@ -1564,6 +1591,60 @@ function SyntheticCalibrationDialog({
           >
             {creating && <Spinner data-icon="inline-start" />}
             Create CAL-00
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ResearchWorkflowTemplatesDialog is deliberately separate from the normal
+// task composer. Its endpoint creates fixed, reusable template text only: it
+// cannot create a task, start an agent, call an LLM, invoke a tool, or contact
+// a target. This gives an operator a visible, reviewable preparation workflow
+// before there is a scoped engagement to create.
+function ResearchWorkflowTemplatesDialog({
+  creating,
+  onCreate,
+}: {
+  creating: boolean;
+  onCreate: () => Promise<void>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => !creating && setOpen(next)}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={creating}>
+          {creating ? <Spinner data-icon="inline-start" /> : <ClipboardCheckIcon data-icon="inline-start" />}
+          Safe research templates
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Create safe research workflow templates?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This creates four fixed, reusable preparation templates for intake, local source study, local validation, and
+            evidence review. Creates templates only; does not create a task, call an LLM, execute tools, send traffic,
+            or contact a target. It also does not configure a provider, use a shell or browser, capture traffic, or create a
+            finding. The operation is idempotent, so later clicks only return the same templates.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={creating}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={creating}
+            onClick={async (event) => {
+              event.preventDefault();
+              try {
+                await onCreate();
+                setOpen(false);
+              } catch {
+                // onCreate has already shown the actionable error toast.
+              }
+            }}
+          >
+            {creating && <Spinner data-icon="inline-start" />}
+            Create templates
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -3161,11 +3242,13 @@ function CategoryManagementSheet({
 function CreateTaskSheet({
   tasks,
   categories,
+  templateReloadKey,
   onCreated,
   onCategoriesChanged,
 }: {
   tasks: Task[];
   categories: TaskCategory[];
+  templateReloadKey: number;
   onCreated: () => void;
   onCategoriesChanged: () => void;
 }) {
@@ -3310,6 +3393,7 @@ function CreateTaskSheet({
         <div className="flex-1 overflow-y-auto p-6">
           <div className="grid gap-5">
             <TaskTemplateControls
+              key={`task-template-controls-${templateReloadKey}`}
               description={description}
               goal={goal}
               categoryID={categoryID}

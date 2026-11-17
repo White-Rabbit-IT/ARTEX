@@ -64,6 +64,13 @@ export interface TaskTemplate {
   updated_at: string;
 }
 
+// Result from the fixed, non-executing research-workflow template bootstrap.
+// The returned items are ordinary reusable templates, never tasks.
+export interface ResearchWorkflowTemplatesResult {
+  templates: TaskTemplate[];
+  created_count: number;
+}
+
 export interface DeleteTaskOptions {
   delete_assets: boolean;
   delete_traffic: boolean;
