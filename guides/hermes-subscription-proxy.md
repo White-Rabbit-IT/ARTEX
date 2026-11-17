@@ -63,6 +63,37 @@ Before continuing, review the listener/firewall policy so only the intended
 ARTEX project can reach the selected host address. Copy its
 `suggested_profile_base_url` only after that review.
 
+### Multi-bridge hosts: reviewed literal bridge route
+
+If the preflight blocks because `host.docker.internal` resolves to a shared
+bridge, do **not** point Hermes at that alias and do not paste a guessed private
+address into ARTEX. The `artex_network_gateway` line is diagnostic data, not an
+approval to use it.
+
+A host owner can instead separately review a literal ARTEX-bridge design. It
+has all of these properties at the time it is applied:
+
+```text
+Hermes listener:    <current ARTEX bridge gateway>:8645
+ARTEX profile URL:  http://<current ARTEX bridge gateway>:8645/v1
+Allow rule:          source=<current ARTEX container IPv4>, input=<current ARTEX bridge>,
+                     destination=<current ARTEX bridge gateway>, tcp destination port=8645
+Drop rule:           every other input to <current ARTEX bridge gateway>:8645
+```
+
+The rules belong in the host **INPUT** path, not Docker's `FORWARD` path: a
+container connecting to a host-local bridge address terminates on the host. The
+allow must precede the drop. Bind only the literal bridge address; never
+`0.0.0.0`, a WireGuard address, or a public address.
+
+This is not a copy-and-paste firewall recipe. Docker bridge names, gateway
+addresses, and container addresses can change after a Compose network is
+recreated. The host owner must preserve the existing firewall configuration,
+use its established persistent firewall mechanism, re-run this preflight after
+each network recreation, and keep the rule scoped to this one port. ARTEX
+accepts a literal private IPv4 `/v1` endpoint for the explicit Hermes profile,
+but a literal URL alone does not establish the required isolation.
+
 ## 2. Start the Hermes proxy locally
 
 Use the Subscription Proxy command supported by the installed Hermes CLI. The
@@ -165,6 +196,7 @@ or content lengths.
 | Symptom | Check | Safe response |
 | --- | --- | --- |
 | `Load models` fails | Proxy listener, Docker alias, `/v1/models` route | Fix the local proxy binding; do not use a public endpoint as a shortcut. |
+| Preflight blocks on a shared host alias | Alias network and foreign-container count | Keep the alias route disabled. Use the separately reviewed literal-bridge design above; do not bypass the warning by pasting an arbitrary private address. |
 | Connection test fails | Exact model ID, proxy login state, `/v1/chat/completions` support | Re-run only the local synthetic test after inspecting the proxy locally. |
 | Profile saves but tasks/chat are unavailable | `ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION` is not exactly `1` | This is expected calibration mode. Keep it disabled until an explicit review. |
 | A request appears to use another provider | Check the selected profile and ARTEX pool state | Hermes is excluded from failover. Do not enable pool fallback to work around a local proxy failure. |

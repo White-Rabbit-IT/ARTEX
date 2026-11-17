@@ -670,10 +670,11 @@ function ProfileSheet({
                 Run <code>scripts/preflight-hermes-subscription-proxy.sh</code> on the host, then copy its candidate
                 private bridge URL here after a separate firewall review. Do not assume a Docker host alias is isolated:
                 a Hermes proxy has no inbound auth and must not be reachable by unrelated containers. ARTEX rejects
-                public endpoints for this profile. Use the installed Hermes CLI&apos;s normal portal login and start its
-                local Subscription Proxy; do not paste an OAuth token here. The profile test is a fixed synthetic
-                calibration. Task and chat agents stay disabled for Hermes by default and require the separate
-                server-side execution opt-in.
+                public endpoints for this profile. If the preflight blocks the alias route, do not substitute another
+                address here: follow the guide&apos;s separately reviewed literal-bridge firewall design. Use the installed
+                Hermes CLI&apos;s normal portal login and start its local Subscription Proxy; do not paste an OAuth token
+                here. The profile test is a fixed synthetic calibration. Task and chat agents stay disabled for Hermes
+                by default and require the separate server-side execution opt-in.
               </p>
             )}
           </div>

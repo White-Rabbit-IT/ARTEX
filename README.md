@@ -343,8 +343,9 @@ OAuth session; ARTEX stores no Hermes token, rejects public endpoints, and forbi
 outbound proxy for that direct-local route. First run the read-only
 `scripts/preflight-hermes-subscription-proxy.sh`: Docker's `host-gateway` alias can point at a
 shared default bridge on a multi-bridge host, which is not safe for Hermes' unauthenticated local
-proxy. Then start with its synthetic connection calibration and read [the Hermes profile
-guide](guides/hermes-subscription-proxy.md) before any explicit agent-execution opt-in.
+proxy. The guide also documents the separate, host-owner-reviewed literal-bridge firewall design
+for a multi-bridge host. Then start with its synthetic connection calibration and read [the Hermes
+profile guide](guides/hermes-subscription-proxy.md) before any explicit agent-execution opt-in.
 
 For a separate, metadata-only ARTEX activity feed in a Hermes bot channel, see
 [the Hermes observer guide](guides/hermes-observer.md). The container writes local redacted receipts;
