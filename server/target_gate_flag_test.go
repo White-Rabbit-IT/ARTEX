@@ -183,6 +183,96 @@ func TestCreateTaskAcceptsTargetGate(t *testing.T) {
 	}
 }
 
+// ARTEX_REQUIRE_TARGET_GATE is an operator opt-in, not a change to upstream
+// defaults. Once enabled it protects creation, later metadata changes, and the
+// runtime handles reconstructed from legacy database rows.
+func TestRequiredTargetGatePolicy(t *testing.T) {
+	t.Setenv(RequireTargetGateEnv, "1")
+	g := newGateServer(t)
+	if !g.m.RequireTargetGate() {
+		t.Fatal("target-gate deployment policy is not enabled")
+	}
+	if code, body := g.do(t, "GET", "/api/settings", ""); code != 200 || body["target_gate_required"] != true {
+		t.Fatalf("settings policy state: %d %v", code, body)
+	}
+
+	// Manager callers cannot accidentally create an ungated task either.
+	created, err := g.m.CreateTaskWithOptions("policy manager create", gateTestGoal, db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.cleanupTask(t, created.ID)
+	if !created.targetScope(0).Enabled() {
+		t.Fatal("manager-created task is not gated")
+	}
+	off := false
+	if _, err := g.m.CreateTaskWithOptions("policy manager false", gateTestGoal, db.TaskCreateOptions{TargetGate: &off}); !errors.Is(err, ErrTargetGateRequired) {
+		t.Fatalf("manager explicit false error=%v, want ErrTargetGateRequired", err)
+	}
+
+	// API omission becomes an enabled gate, but an explicit opt-out is clear and
+	// rejected. The original policy-off test above remains the compatibility case.
+	code, body := g.do(t, "POST", "/api/tasks", `{"description":"policy api create","goal":"`+gateTestGoal+`"}`)
+	id, _ := body["id"].(string)
+	if code != 201 || id == "" || body["target_gate"] != true {
+		t.Fatalf("policy API omitted gate: %d %v", code, body)
+	}
+	g.cleanupTask(t, id)
+	if code, body = g.do(t, "POST", "/api/tasks", `{"description":"policy api false","goal":"`+gateTestGoal+`","target_gate":false}`); code != 409 || !strings.Contains(fmt.Sprint(body["error"]), "target approval") {
+		t.Fatalf("policy API explicit false: %d %v", code, body)
+	}
+	if code, body = g.do(t, "PATCH", "/api/tasks/"+id, `{"target_gate":false}`); code != 409 || !strings.Contains(fmt.Sprint(body["error"]), "target approval") {
+		t.Fatalf("policy task downgrade: %d %v", code, body)
+	}
+
+	// A pre-policy/direct-database row is still protected when its in-memory
+	// runtime handle is loaded.
+	legacy, err := g.m.pg.CreateTaskWithOptions("legacy target gate", gateTestGoal, db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID := strconv.FormatInt(legacy.ID, 10)
+	g.cleanupTask(t, legacyID)
+	g.m.LoadExisting()
+	loaded, ok := g.m.Task(legacyID)
+	if !ok || !loaded.targetScope(0).Enabled() {
+		t.Fatalf("legacy task runtime gate=%v present=%v, want enabled", loaded, ok)
+	}
+
+	// Conversations use the same create and downgrade policy.
+	code, body = g.do(t, "POST", "/api/conversations", `{"agent_key":"auto","title":"policy conversation"}`)
+	conversationID, _ := body["id"].(float64)
+	if code != 200 || conversationID == 0 || body["target_gate"] != true {
+		t.Fatalf("policy conversation omitted gate: %d %v", code, body)
+	}
+	t.Cleanup(func() { _ = g.m.pg.DeleteConversation(int64(conversationID)) })
+	if code, body = g.do(t, "POST", "/api/conversations", `{"agent_key":"auto","title":"policy conversation false","target_gate":false}`); code != 409 || !strings.Contains(fmt.Sprint(body["error"]), "target approval") {
+		t.Fatalf("policy conversation explicit false: %d %v", code, body)
+	}
+	conversationPath := "/api/conversations/" + strconv.FormatInt(int64(conversationID), 10)
+	if code, body = g.do(t, "PATCH", conversationPath, `{"target_gate":false}`); code != 409 || !strings.Contains(fmt.Sprint(body["error"]), "target approval") {
+		t.Fatalf("policy conversation downgrade: %d %v", code, body)
+	}
+
+	// The runtime backstop covers a false conversation row that predates the
+	// policy (or was inserted by a database administrator).
+	legacyConversation, err := g.m.pg.CreateConversationGated("auto", "legacy policy conversation", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.m.pg.DeleteConversation(legacyConversation.ID) })
+	probe := newScopeProbeProvider()
+	g.s.cfgMu.Lock()
+	g.s.chatAgent = agent.NewChatAgent(probe, "test-model", g.m.dir, nil, 10000)
+	g.s.cfgMu.Unlock()
+	ctx, cancel := context.WithCancelCause(intercept.WithConvID(context.Background(), legacyConversation.ID))
+	g.s.runConversationTurn(ctx, cancel, legacyConversation, "policy runtime probe", g.s.convBusyKey(legacyConversation.ID))
+	got := probe.first(t)
+	if !got.ok || got.scope.Enabled == nil || !got.scope.Enabled() {
+		t.Fatalf("legacy conversation runtime scope=%+v present=%v, want gated", got.scope, got.ok)
+	}
+}
+
 // ruleLines renders a task's intercept rules for comparison.
 func ruleLines(t *testing.T, as *db.AssetStore, taskID string) []string {
 	t.Helper()

@@ -57,6 +57,10 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.m.UpdateTaskMetadata(taskID, db.TaskPatch{Name: request.Name, Pinned: request.Pinned, PlanQuietMode: request.PlanQuietMode, TargetGate: request.TargetGate})
 	if err != nil {
+		if errors.Is(err, ErrTargetGateRequired) {
+			writeErr(w, http.StatusConflict, targetGateRequiredMessage)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

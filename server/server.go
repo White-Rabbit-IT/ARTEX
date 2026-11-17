@@ -1715,7 +1715,7 @@ type createTaskReq struct {
 	LLMRotate            *bool    `json:"llm_rotate"`                  // distribute worker intents across the ordered profiles
 	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner heartbeat interval (seconds); 0/omitted = default 600 (10min); floor = default = 600, lower values are raised to 600
 	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
-	TargetGate           *bool    `json:"target_gate,omitempty"`       // approval gate for asset targets, opt-in; omitted/null = off
+	TargetGate           *bool    `json:"target_gate,omitempty"`       // approval gate for asset targets; omitted/null = off unless the deployment requires it
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // issue one seed intent at creation (content = description + goal) so a worker can start right away without waiting for the first planner round; omitted/null = default off, the standard plan-then-execute flow. Pass true explicitly to enable (for CTF tasks often solved in one work, this skips the pre-start planner round).
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // asset coverage feature; omitted/null = default on (true). false = disables coverage calculation/display/auto-accumulated scope + hides add_task_scope/list_untested_assets. company links are unaffected.
 	// InterceptRules: task-level asset interception/allow rules (entered at creation, stored in task_intercept_rules, never the global table).
@@ -1800,6 +1800,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		TargetGate:      req.TargetGate,
 	})
 	if err != nil {
+		if errors.Is(err, ErrTargetGateRequired) {
+			writeErr(w, http.StatusConflict, targetGateRequiredMessage)
+			return
+		}
 		if errors.Is(err, ErrSystemTaskImmutable) || errors.Is(err, db.ErrSystemTaskImmutable) {
 			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 			return
@@ -3708,6 +3712,9 @@ func (s *Server) settingsPayload() map[string]any {
 	}
 	limits := notifyLimits(s.m.pg)
 	return map[string]any{
+		// Process-start policy, exposed read-only so an operator can verify the
+		// deployed guard without treating it as another mutable UI switch.
+		"target_gate_required":    s.m.RequireTargetGate(),
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"llm_record":               s.m.LLMRecordEnabled(),

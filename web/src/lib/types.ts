@@ -984,6 +984,9 @@ export interface TrafficHost {
 
 // ---- App settings (runtime toggles) ----
 export interface Settings {
+  // Read-only deployment policy. When true, ARTEX refuses new explicit
+  // target_gate:false requests and executes legacy rows through the gate.
+  target_gate_required?: boolean;
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // agents auto-bind traffic evidence, off by default; does not affect manual binding
   llm_record: boolean; // LLM recording switch (off by default); when off no LLM calls are recorded

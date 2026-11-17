@@ -48,6 +48,9 @@ services:
       # Optional: key for secrets at rest; empty = keys/secret.key (generated at first start).
       ARTEX_SECRET_KEY: ${ARTEX_SECRET_KEY:-}
       ARTEX_TRUSTED_PROXIES: ${ARTEX_TRUSTED_PROXIES:-}
+      # Operator policy: only the literal value 1 forces target approval for
+      # task and conversation execution. Empty preserves upstream compatibility.
+      ARTEX_REQUIRE_TARGET_GATE: ${ARTEX_REQUIRE_TARGET_GATE:-}
       # Untrusted-output boundary: on by default (empty = on); ARTEX_UNTRUSTED_BOUNDARY=0 in .env
       # disables it. Cost: about 154 bytes per tool result plus one system note.
       ARTEX_UNTRUSTED_BOUNDARY: ${ARTEX_UNTRUSTED_BOUNDARY:-}

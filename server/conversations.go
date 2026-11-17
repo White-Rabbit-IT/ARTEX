@@ -79,7 +79,7 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		AgentKey     string `json:"agent_key"`
 		Title        string `json:"title"`
 		LLMProfileID *int64 `json:"llm_profile_id"`
-		TargetGate   bool   `json:"target_gate"` // approval gate for asset targets, opt-in
+		TargetGate   *bool  `json:"target_gate"` // omitted/null = off unless the deployment requires it
 	}
 	if !decodeConversationRequest(w, r, &req) {
 		return
@@ -121,7 +121,13 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Sprintf("Title must be at most %d characters", maxConversationTitleRunes))
 		return
 	}
-	c, err := pg.CreateConversationGated(req.AgentKey, title, req.LLMProfileID, req.TargetGate)
+	targetGate, err := s.m.normalizeRequiredTargetGate(req.TargetGate)
+	if err != nil {
+		writeErr(w, http.StatusConflict, targetGateRequiredMessage)
+		return
+	}
+	gateEnabled := targetGate != nil && *targetGate
+	c, err := pg.CreateConversationGated(req.AgentKey, title, req.LLMProfileID, gateEnabled)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -209,6 +215,10 @@ func (s *Server) pgRenameConversation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Title = &title
+	}
+	if err := s.m.requireTargetGateUpdate(req.TargetGate); err != nil {
+		writeErr(w, http.StatusConflict, targetGateRequiredMessage)
+		return
 	}
 	updated, err := pg.UpdateConversation(c.ID, db.ConversationPatch{Title: req.Title, Pinned: req.Pinned, TargetGate: req.TargetGate})
 	if err != nil {
@@ -573,7 +583,7 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	// Approval scope of this turn's tool calls for the target gate (chat and retester).
 	// The conversation's opt-in flag is the one read when the turn started: a
 	// switch through the API applies from the next turn.
-	gate := c.TargetGate
+	gate := s.m.effectiveTargetGate(c.TargetGate)
 	gctx := intercept.WithTargetScope(ctx, intercept.TargetScope{ConversationID: c.ID, Enabled: func() bool { return gate },
 		WaitBound: intercept.DefaultTargetWaitBound, Interceptor: s.m.interceptor})
 	// On a manual stop ctx is cancelled; Chat already emits a clean "stopped by the user"
@@ -644,10 +654,11 @@ func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64
 		return
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
-	// A conversation triggered by a gated task is gated (the flag only, never pins).
-	gated := false
+	// A conversation triggered by a gated task is gated (the flag only, never
+	// pins). The deployment policy also gates no-task and legacy task triggers.
+	gated := s.m.RequireTargetGate()
 	if t, ok := s.m.Task(strconv.FormatInt(taskID, 10)); ok && taskID > 0 {
-		gated = t.targetGate.Load()
+		gated = gated || t.targetGate.Load()
 	}
 	s.queueMu.Lock()
 	s.triggerCfg[agentKey] = cfg
@@ -851,7 +862,7 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 		}
 	}()
 	pg := s.m.pg
-	c, err := pg.CreateConversationGated(item.agentKey, firstLine(item.title, 60), nil, item.targetGate)
+	c, err := pg.CreateConversationGated(item.agentKey, firstLine(item.title, 60), nil, s.m.effectiveTargetGate(item.targetGate))
 	if err != nil {
 		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)
 		return

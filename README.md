@@ -257,8 +257,10 @@ worker remains confined to the intent it claimed.
   construction (`["git","push"]` covers `git push --force`, but `git -C /repo push` matches
   nothing). Each approval records who decided: `human`, `rule`, `model` or `system`.
 - **Scope and target gate**: scope rows define the coverage denominator; assets outside the
-  declared scope are not explored. The target gate (off by default, API-only) can refuse
-  destinations that were not approved.
+  declared scope are not explored. The browser creates gated tasks. For backwards compatibility,
+  the generic API defaults to an opt-in gate; operators can set
+  `ARTEX_REQUIRE_TARGET_GATE=1` to require approval for every task and conversation execution
+  path, reject explicit opt-outs, and apply the guard to legacy rows at runtime.
 - **Budgets**: `ARTEX_TASK_BUDGET_TOKENS` / `ARTEX_TASK_BUDGET_TURNS` cap a whole task (planner and
   workers); `ARTEX_INTENT_BUDGET_TOKENS` / `ARTEX_INTENT_BUDGET_TURNS` cap one worker run. Near the
   limit the task enters a forced wrap-up; a worker is not started when the remaining budget cannot

@@ -3328,6 +3328,7 @@ export const tools: Tool[] = [
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 export const settings: Settings = {
+  target_gate_required: false,
   traffic_capture: true,
   agent_traffic_binding: false,
   llm_record: false,

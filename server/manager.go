@@ -298,7 +298,8 @@ type Manager struct {
 	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
-	globalProxy string
+	globalProxy       string
+	requireTargetGate bool // process-start deployment policy; never mutable through the API
 }
 
 // Settings keys the UI toggles at runtime.
@@ -436,7 +437,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), requireTargetGate: targetGateRequiredFromEnv()}
+	if m.requireTargetGate {
+		log.Printf("[target-gate] deployment policy enabled: all task and conversation execution requires target approval")
+	}
 	// Behind the global egress proxy a target approval is name-only.
 	m.interceptor.SetUpstreamProxyCheck(func() bool { return m.GlobalProxy() != "" })
 	// The platform's own endpoints need no target approval.
@@ -923,6 +927,16 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 	return t
 }
 
+// taskFromPG applies process-wide execution policy while preserving the raw
+// database helper for compatibility-focused tests and callers. Existing rows
+// that predate ARTEX_REQUIRE_TARGET_GATE remain readable as they were stored,
+// but their in-memory execution handle is always gated while the policy is on.
+func (m *Manager) taskFromPG(pt *pgdb.Task) *Task {
+	t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+	t.targetGate.Store(m.effectiveTargetGate(pt.TargetGate))
+	return t
+}
+
 // targetScope is the approval scope of this task's tool calls for the target
 // gate. wait bounds how long a gated call may wait for a human decision.
 // Enabled reads the task's opt-in flag on every call, so a switch through the
@@ -960,6 +974,9 @@ func (m *Manager) targetGateEndpoints() []string {
 // UpdateTaskMetadata changes list-only task metadata without interrupting any
 // planner, main-agent, or worker call.
 func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task, error) {
+	if err := m.requireTargetGateUpdate(patch.TargetGate); err != nil {
+		return nil, err
+	}
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	if err := m.requireMutableTask(taskID); err != nil {
@@ -986,7 +1003,7 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 	// Live switch (#86): runRound reads the flag per round, so the next
 	// planning round (edge or heartbeat) already respects the new value.
 	task.PlanQuietMode = updated.PlanQuietMode
-	task.targetGate.Store(updated.TargetGate)
+	task.targetGate.Store(m.effectiveTargetGate(updated.TargetGate))
 	return task, nil
 }
 
@@ -1003,6 +1020,11 @@ func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, time
 }
 
 func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.TaskCreateOptions) (*Task, error) {
+	var err error
+	opts.TargetGate, err = m.normalizeRequiredTargetGate(opts.TargetGate)
+	if err != nil {
+		return nil, err
+	}
 	// A fixed ARTEX system record is inspectable but is never reusable as an
 	// inheritance source. Reject it before creating a new child exploration;
 	// db.insertTaskRelations repeats the check transactionally for cold callers.
@@ -1019,7 +1041,7 @@ func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.Task
 	if err != nil {
 		return nil, err
 	}
-	t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+	t := m.taskFromPG(pt)
 	m.mu.Lock()
 	m.tasks[t.ID] = t
 	m.active = t.ID
@@ -1053,7 +1075,7 @@ func (m *Manager) EnsureSyntheticCalibrationTask() (*Task, bool, error) {
 	if existing := m.tasks[id]; existing != nil {
 		return existing, result.AlreadyPresent, nil
 	}
-	t := taskFromPG(result.Task, m.pg.Exploration(result.Task.ExplorationID), m.interceptor)
+	t := m.taskFromPG(result.Task)
 	m.tasks[t.ID] = t
 	if m.active == "" {
 		m.active = t.ID
@@ -1261,7 +1283,7 @@ func (m *Manager) LoadExisting() []*Task {
 		if _, ok := m.tasks[id]; ok {
 			continue
 		}
-		t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+		t := m.taskFromPG(pt)
 		m.tasks[id] = t
 		loaded = append(loaded, t)
 	}

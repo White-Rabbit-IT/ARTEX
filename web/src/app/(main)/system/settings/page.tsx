@@ -18,6 +18,7 @@ import type { Settings } from "@/lib/types";
 import { NoiseProfileCard } from "./noise-profile-card";
 
 export default function SystemSettingsPage() {
+  const [targetGateRequired, setTargetGateRequired] = React.useState(false);
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
@@ -47,6 +48,7 @@ export default function SystemSettingsPage() {
   const sendMode = useChatSendMode();
 
   const apply = React.useCallback((s: Settings) => {
+    setTargetGateRequired(!!s.target_gate_required);
     setTrafficCapture(!!s.traffic_capture);
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setWebSearch(!!s.web_search_enabled);
@@ -267,6 +269,27 @@ export default function SystemSettingsPage() {
           balance-fill by content height. Card spacing uses mb rather than gap — in a multi-column layout
           column-gap only covers the gaps between columns; row spacing must come from the children. */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldAlertIcon className="size-4" />
+              Target approval policy
+            </CardTitle>
+            <CardDescription>
+              This is a read-only deployment policy. When enabled, ARTEX requires a human target approval for task and conversation execution,
+              rejects explicit attempts to disable the gate, and applies the guard to legacy records at runtime.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm font-medium">
+              {targetGateRequired ? "Required · runtime enforcement is active" : "Optional · legacy compatibility mode"}
+            </p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Set <code>ARTEX_REQUIRE_TARGET_GATE=1</code> in the deployment environment and restart only ARTEX to enable it.
+            </p>
+          </CardContent>
+        </Card>
+
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
