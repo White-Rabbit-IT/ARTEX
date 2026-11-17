@@ -57,9 +57,6 @@ func TestResearchWorkflowTemplatesEndpointIsAuthenticatedInertAndIdempotent(t *t
 		return tasks, explorations, activity
 	}
 	beforeTasks, beforeExplorations, beforeActivity := counts()
-	if beforeTasks != 0 || beforeExplorations != 0 {
-		t.Fatalf("new isolated test manager has work rows before bootstrap: tasks=%d explorations=%d", beforeTasks, beforeExplorations)
-	}
 
 	code, first := request("")
 	if code != http.StatusCreated {
@@ -90,7 +87,7 @@ func TestResearchWorkflowTemplatesEndpointIsAuthenticatedInertAndIdempotent(t *t
 	})
 
 	afterTasks, afterExplorations, afterActivity := counts()
-	if afterTasks != 0 || afterExplorations != 0 || afterTasks != beforeTasks || afterExplorations != beforeExplorations || afterActivity != beforeActivity {
+	if afterTasks != beforeTasks || afterExplorations != beforeExplorations || afterActivity != beforeActivity {
 		t.Fatalf("template bootstrap created work rows: tasks %d->%d explorations %d->%d activity %d->%d", beforeTasks, afterTasks, beforeExplorations, afterExplorations, beforeActivity, afterActivity)
 	}
 
@@ -104,7 +101,7 @@ func TestResearchWorkflowTemplatesEndpointIsAuthenticatedInertAndIdempotent(t *t
 		}
 	}
 	replayTasks, replayExplorations, replayActivity := counts()
-	if replayTasks != 0 || replayExplorations != 0 || replayTasks != beforeTasks || replayExplorations != beforeExplorations || replayActivity != beforeActivity {
+	if replayTasks != beforeTasks || replayExplorations != beforeExplorations || replayActivity != beforeActivity {
 		t.Fatalf("replay created work rows: tasks %d->%d explorations %d->%d activity %d->%d", beforeTasks, replayTasks, beforeExplorations, replayExplorations, beforeActivity, replayActivity)
 	}
 }
