@@ -27,7 +27,7 @@ STAGE_DIR="$TEST_DIR/review"
 DRY_OUTPUT="$TEST_DIR/dry-run.txt"
 "$STAGER" --stage-dir "$STAGE_DIR" >"$DRY_OUTPUT"
 [[ ! -e "$STAGE_DIR" ]] || fail 'dry run created the stage directory'
-rg -F 'dry-run; no files will be created' "$DRY_OUTPUT" >/dev/null || fail 'dry-run receipt was missing'
+grep -F -- 'dry-run; no files will be created' "$DRY_OUTPUT" >/dev/null || fail 'dry-run receipt was missing'
 
 set +e
 "$STAGER" --stage-dir relative --apply >/dev/null 2>&1
@@ -80,7 +80,7 @@ after_sum="$(sha256sum -- "$STAGE_DIR"/* | sha256sum)"
 
 # The stager is purposely a file-only helper. Do not accidentally grow it into
 # an activation path while editing it in the future.
-if rg -n '(^|[[:space:]])(systemctl|docker|iptables|nft|hermes)[[:space:]]' "$STAGER" >/dev/null; then
+if grep -Eq '(^|[[:space:]])(systemctl|docker|iptables|nft|hermes)[[:space:]]' "$STAGER"; then
   fail 'stager source contains a prohibited activation command'
 fi
 
