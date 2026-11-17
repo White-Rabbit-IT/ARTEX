@@ -12,7 +12,14 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 LC_ALL=C
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SOURCE_PATH="${BASH_SOURCE[0]:-}"
+if [[ -n "$SOURCE_PATH" ]]; then
+  SCRIPT_DIR="$(cd -- "$(dirname -- "$SOURCE_PATH")" && pwd -P)"
+else
+  # `bash -s` has no BASH_SOURCE entry. The caller must then supply
+  # --project-dir; use the current directory only for the unused default.
+  SCRIPT_DIR="$(pwd -P)"
+fi
 readonly SCRIPT_DIR
 DEFAULT_PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 readonly DEFAULT_PROJECT_DIR
@@ -156,7 +163,7 @@ if ((ARTEX_FOREIGN_COUNT > 0)); then
   block "ARTEX network contains $ARTEX_FOREIGN_COUNT container(s) outside Compose project $ARTEX_PROJECT"
 fi
 
-if ! alias_raw="$(compose exec -T artex getent ahostsv4 host.docker.internal 2>/dev/null)"; then
+if ! alias_raw="$(compose exec -T artex getent ahostsv4 host.docker.internal </dev/null 2>/dev/null)"; then
   alias_raw=""
   block 'could not resolve host.docker.internal inside ARTEX'
 fi

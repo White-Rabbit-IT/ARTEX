@@ -130,6 +130,17 @@ set -e
 [[ "$safe_output" == *'result=TOPOLOGY_REVIEW_REQUIRED'* ]] || fail 'safe fixture did not retain manual-review state'
 [[ "$safe_output" == *'suggested_profile_base_url=http://172.18.0.1:8645/v1'* ]] || fail 'safe fixture omitted literal candidate URL'
 
+# Docker Compose exec must not inherit the script's own stdin. This keeps a
+# safe `bash -s` diagnostic from feeding the rest of its script to the ARTEX
+# container, and verifies the no-BASH_SOURCE fallback used by that form.
+set +e
+stdin_output="$(PATH="$FAKE_BIN:$PATH" PREFLIGHT_FIXTURE=safe PREFLIGHT_LISTENER=0 \
+  bash -s -- --project-dir "$PROJECT_DIR" <"$PREFLIGHT" 2>&1)"
+stdin_status=$?
+set -e
+((stdin_status == 0)) || fail "stdin invocation returned $stdin_status, want 0"
+[[ "$stdin_output" == *'result=TOPOLOGY_REVIEW_REQUIRED'* ]] || fail 'stdin invocation did not finish the preflight'
+
 set +e
 listener_output="$(run_preflight safe 1)"
 listener_status=$?
