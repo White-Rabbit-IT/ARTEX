@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Provision the narrow filesystem boundary used by the optional Hermes observer.
 # This script intentionally does not start Docker, Hermes, ARTEX, or a service.
 # It only creates a root-owned producer directory and grants one non-root Hermes

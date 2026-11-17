@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò// ARTEX domain model â€” types used across the UI.
+// ARTEX domain model â€” types used across the UI.
 // Derived from the functional spec (section 7: key data shapes).
 
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";

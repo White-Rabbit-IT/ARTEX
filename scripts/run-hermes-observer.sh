@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Deliver ARTEX's metadata-only observer receipts to an already-authenticated
 # local Hermes CLI. This host-side helper never reads Hermes credentials,
 # starts/stops Hermes, or lets a receipt choose its delivery target.

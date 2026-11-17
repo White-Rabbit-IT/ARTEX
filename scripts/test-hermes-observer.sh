@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Offline contract test for scripts/run-hermes-observer.sh. It never contacts a
 # real Hermes service and fabricates only already-redacted observer receipts.
 set -Eeuo pipefail

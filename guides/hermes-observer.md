@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò# Hermes observer sender
+# Hermes observer sender
 
 The optional Hermes observer publishes a small, metadata-only ARTEX activity
 feed to a fixed Hermes bot/channel target. It is deliberately **not** an ARTEX

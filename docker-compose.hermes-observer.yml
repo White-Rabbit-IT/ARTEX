@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò# Optional Compose overlay for the metadata-only Hermes observer. It is not
+# Optional Compose overlay for the metadata-only Hermes observer. It is not
 # included by the ordinary stack: the host directory must first be provisioned
 # by scripts/provision-hermes-observer.sh as a root-owned, group-readable
 # directory. `create_host_path: false` makes a missing provisioning step fail

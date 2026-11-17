@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šòpackage server
+package server
 
 // The Hermes observer is deliberately an outbox, not a Hermes client. ARTEX
 // writes a small, metadata-only receipt locally; a host-side operator process

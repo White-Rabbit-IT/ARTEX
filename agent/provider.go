@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò// Package agent wires real LLM-driven planner and work agents (on top of the
+// Package agent wires real LLM-driven planner and work agents (on top of the
 // agent-core SDK) to the dual PostgreSQL graph. See the ARTEX architecture design doc
 // Â§4.3 (planner) and Â§4.4 (work agent).
 //

@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò# Hermes Subscription Proxy with ARTEX
+# Hermes Subscription Proxy with ARTEX
 
 This guide configures a **local Hermes Subscription Proxy** as an ARTEX LLM
 profile. It does not put a Hermes OAuth token, OpenAI API key, or Portal MCP
