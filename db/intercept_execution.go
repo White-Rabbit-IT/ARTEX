@@ -3,7 +3,6 @@ package db
 import (
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 var ErrInterceptTaskDeleted = errors.New("task has been deleted or archived")
@@ -36,8 +35,8 @@ func (d *DB) GetInterceptExecution(id int64) (*InterceptExecution, error) {
 		scope = *approval.ConversationID
 		query = `SELECT id, NULL::bigint, COALESCE(worker,''), kind, COALESCE(tool,''), tool_use_id, is_error, COALESCE(summary,''), created_at, NULL::integer FROM conversation_activities WHERE conversation_id=$1`
 	} else if approval.TaskID != nil {
-		taskID, parseErr := strconv.ParseInt(*approval.TaskID, 10, 64)
-		if parseErr != nil || taskID <= 0 {
+		taskID, parseErr := parseCanonicalInterceptTaskID(*approval.TaskID)
+		if parseErr != nil {
 			return nil, ErrInterceptExecutionUnavailable
 		}
 		var exists bool

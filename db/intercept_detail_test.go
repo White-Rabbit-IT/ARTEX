@@ -8,6 +8,43 @@ import (
 	"testing"
 )
 
+func TestParseCanonicalInterceptTaskID(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		want    int64
+		invalid bool
+	}{
+		{raw: "1", want: 1},
+		{raw: "42", want: 42},
+		{raw: "", invalid: true},
+		{raw: "0", invalid: true},
+		{raw: "-1", invalid: true},
+		{raw: "+42", invalid: true},
+		{raw: "042", invalid: true},
+		{raw: "42 ", invalid: true},
+		{raw: "9223372036854775808", invalid: true},
+	} {
+		got, err := parseCanonicalInterceptTaskID(tc.raw)
+		if tc.invalid {
+			if err == nil {
+				t.Fatalf("parse %q = %d, nil; want invalid", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("parse %q = %d, %v; want %d, nil", tc.raw, got, err, tc.want)
+		}
+	}
+	if id, canonical, err := parseInterceptTaskReference("approval-detail-test"); err != nil || canonical || id != 0 {
+		t.Fatalf("opaque legacy reference = id=%d canonical=%t err=%v, want 0/false/nil", id, canonical, err)
+	}
+	for _, raw := range []string{"00042", "+42", "0", "-1", "42 ", " 42", "9223372036854775808"} {
+		if _, canonical, err := parseInterceptTaskReference(raw); err == nil || canonical {
+			t.Fatalf("numeric legacy alias %q canonical=%t err=%v, want false/non-nil", raw, canonical, err)
+		}
+	}
+}
+
 func TestInterceptDetails(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {

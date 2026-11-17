@@ -192,16 +192,14 @@ WHERE COALESCE(task_id,'')=$1 AND status='pending' AND target_key IS NOT NULL`, 
 // Route-level task guards do not cover internal callers, and target approvals
 // can be resumed by a stale global pending-row id after a restart.
 func (d *DB) requireMutableTargetScope(scope TargetScopeRef) error {
+	return requireMutableTargetScope(d, scope)
+}
+
+func requireMutableTargetScope(q interceptTaskQueryer, scope TargetScopeRef) error {
 	if scope.TaskID <= 0 {
 		return nil
 	}
-	var systemKind string
-	err := d.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1`, scope.TaskID).Scan(&systemKind)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Preserve the existing scope semantics for legacy/deleted rows; the
-		// actual writer will retain its own validity checks.
-		return nil
-	}
+	systemKind, err := interceptTaskSystemKind(q, scope.TaskID)
 	if err != nil {
 		return err
 	}
@@ -302,21 +300,24 @@ func (d *DB) ResolveTargetRequest(id int64, allowed bool, approver, remoteAddr s
 	var taskID sql.NullString
 	var convID sql.NullInt64
 	var raw []byte
-	var systemKind string
-	err = tx.QueryRow(`SELECT pending.task_id, pending.conversation_id, pending.audit, COALESCE(task.system_kind,'')
+	err = tx.QueryRow(`SELECT pending.task_id, pending.conversation_id, pending.audit
 FROM intercept_pending pending
-LEFT JOIN tasks task ON task.id::text=pending.task_id
 WHERE pending.id=$1 AND pending.status='pending' AND pending.target_key IS NOT NULL
-FOR UPDATE OF pending`, id).Scan(&taskID, &convID, &raw, &systemKind)
+FOR UPDATE OF pending`, id).Scan(&taskID, &convID, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
+	resolvedTaskID, systemKind, err := interceptPendingTaskSystemKind(tx, taskID)
+	if err != nil {
+		return nil, false, err
+	}
 	if systemKind != "" {
 		return nil, false, fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
 	}
+	scope := TargetScopeRef{TaskID: resolvedTaskID, ConversationID: convID.Int64}
 	var audit InterceptAudit
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &audit); err != nil {
@@ -325,14 +326,16 @@ FOR UPDATE OF pending`, id).Scan(&taskID, &convID, &raw, &systemKind)
 	}
 	status, action, reason, execution := "denied", "deny", "user rejected the target; nothing was pinned", "not_executed"
 	if allowed {
+		if taskID.Valid && resolvedTaskID == 0 {
+			// Opaque labels are still readable on classic legacy approvals, but a
+			// target request must name a durable numeric scope before it can pin.
+			return nil, false, fmt.Errorf("%w: %q", ErrInvalidInterceptTaskID, taskID.String)
+		}
+		if err := scope.check(); err != nil {
+			return nil, false, fmt.Errorf("target request %d has invalid scope: %w", id, err)
+		}
 		if len(audit.Targets) != 1 {
 			return nil, false, fmt.Errorf("target request %d records %d targets, want 1", id, len(audit.Targets))
-		}
-		scope := TargetScopeRef{ConversationID: convID.Int64}
-		if taskID.Valid {
-			if scope.TaskID, err = strconv.ParseInt(taskID.String, 10, 64); err != nil {
-				return nil, false, fmt.Errorf("target request %d: task id %q: %w", id, taskID.String, err)
-			}
 		}
 		if pin, err = writeTargetPin(tx, scope, id, &audit.Targets[0], approver, remoteAddr); err != nil {
 			return nil, false, err
@@ -378,6 +381,12 @@ var ErrTargetPinEmpty = errors.New("the target request lists no resolved address
 // request's target with what was pinned. The only writer of target_pins rows.
 func writeTargetPin(tx *sql.Tx, scope TargetScopeRef, interceptID int64, t *InterceptTarget, approver, remoteAddr string) (*TargetPin, error) {
 	if err := scope.check(); err != nil {
+		return nil, err
+	}
+	// ResolveTargetRequest already checked the pending row, but this is the
+	// final transactional backstop before a pin is written. It also protects a
+	// future caller of this low-level helper from attaching a pin to CAL-00.
+	if err := requireMutableTargetScope(tx, scope); err != nil {
 		return nil, err
 	}
 	// Versions count every pin the key ever had, revoked ones included, so a

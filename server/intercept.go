@@ -415,6 +415,10 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 			return
 		}
+		if errors.Is(err, db.ErrInvalidInterceptTaskID) {
+			writeErr(w, http.StatusConflict, "approval record has an invalid task reference and cannot be changed")
+			return
+		}
 		if errors.Is(err, intercept.ErrAlreadyDecided) {
 			writeErr(w, 409, err.Error())
 			return
@@ -519,6 +523,10 @@ func (s *Server) interceptAlwaysAllow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if system, err := pg.IsSystemTaskInterceptPending(id); err != nil {
+		if errors.Is(err, db.ErrInvalidInterceptTaskID) {
+			writeErr(w, http.StatusConflict, "approval record has an invalid task reference and cannot be changed")
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	} else if system {

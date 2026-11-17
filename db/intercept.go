@@ -3,7 +3,9 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,6 +48,100 @@ type InterceptPending struct {
 }
 
 const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, created_at, updated_at`
+
+// ErrInvalidInterceptTaskID marks a numeric legacy intercept_pending.task_id
+// which cannot name a task unambiguously. The column predates the task
+// foreign-key model and historic nonnumeric labels remain opaque legacy data,
+// but current writers always store the canonical positive decimal rendering of
+// a task ID. Do not coerce alternate numeric spellings here: an approval
+// record with corrupt ownership must remain inert rather than act on a
+// numerically similar task.
+var ErrInvalidInterceptTaskID = errors.New("intercept task id is not a canonical positive decimal task id")
+
+type interceptTaskQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func parseCanonicalInterceptTaskID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, fmt.Errorf("%w: %q", ErrInvalidInterceptTaskID, raw)
+	}
+	return id, nil
+}
+
+func looksLikeNumericTaskReference(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	if trimmed[0] == '+' || trimmed[0] == '-' {
+		trimmed = trimmed[1:]
+	}
+	if trimmed == "" {
+		return false
+	}
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] < '0' || trimmed[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// parseInterceptTaskReference preserves pre-task-model opaque labels while
+// refusing numeric spellings which a later sink could otherwise reinterpret as
+// a task ID. canonical is false only for an opaque, nonnumeric legacy label.
+func parseInterceptTaskReference(raw string) (taskID int64, canonical bool, err error) {
+	id, parseErr := strconv.ParseInt(raw, 10, 64)
+	if parseErr != nil {
+		if looksLikeNumericTaskReference(raw) {
+			return 0, false, fmt.Errorf("%w: %q", ErrInvalidInterceptTaskID, raw)
+		}
+		return 0, false, nil
+	}
+	if id <= 0 || strconv.FormatInt(id, 10) != raw {
+		return 0, false, fmt.Errorf("%w: %q", ErrInvalidInterceptTaskID, raw)
+	}
+	return id, true, nil
+}
+
+func interceptTaskSystemKind(q interceptTaskQueryer, taskID int64) (string, error) {
+	var systemKind string
+	err := q.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1`, taskID).Scan(&systemKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Keep legacy/deleted task semantics: a row which points at no durable
+		// task is not silently rewritten, and its caller retains its own
+		// not-found or scope validation behavior.
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return systemKind, nil
+}
+
+// interceptPendingTaskSystemKind resolves a legacy approval-row task reference
+// once, with the same representation used by every guard and downstream sink.
+// A NULL reference is the valid conversation-scoped form. Historic opaque
+// labels are not task references; numeric references must be canonical.
+func interceptPendingTaskSystemKind(q interceptTaskQueryer, raw sql.NullString) (int64, string, error) {
+	if !raw.Valid {
+		return 0, "", nil
+	}
+	taskID, canonical, err := parseInterceptTaskReference(raw.String)
+	if err != nil {
+		return 0, "", err
+	}
+	if !canonical {
+		return 0, "", nil
+	}
+	systemKind, err := interceptTaskSystemKind(q, taskID)
+	if err != nil {
+		return 0, "", err
+	}
+	return taskID, systemKind, nil
+}
 
 func scanInterceptRule(row interface{ Scan(...any) error }) (InterceptRule, error) {
 	var r InterceptRule
@@ -117,16 +213,19 @@ func (d *DB) requireMutableInterceptTask(taskID string) error {
 	if taskID == "" {
 		return nil
 	}
-	var systemKind string
-	err := d.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id::text=$1`, taskID).Scan(&systemKind)
-	if err == sql.ErrNoRows {
+	id, canonical, err := parseInterceptTaskReference(taskID)
+	if err != nil {
+		return err
+	}
+	if !canonical {
 		return nil
 	}
+	systemKind, err := interceptTaskSystemKind(d, id)
 	if err != nil {
 		return err
 	}
 	if systemKind != "" {
-		return fmt.Errorf("%w: task %s", ErrSystemTaskImmutable, taskID)
+		return fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, id)
 	}
 	return nil
 }

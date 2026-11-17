@@ -158,15 +158,18 @@ func (d *DB) ResolveInterceptBy(id int64, status, action, reason, decidedBy, app
 		return false, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	var systemKind string
-	err = tx.QueryRow(`SELECT COALESCE(task.system_kind,'')
+	var taskID sql.NullString
+	err = tx.QueryRow(`SELECT pending.task_id
 FROM intercept_pending pending
-LEFT JOIN tasks task ON task.id::text=pending.task_id
 WHERE pending.id=$1 AND pending.status='pending'
-FOR UPDATE OF pending`, id).Scan(&systemKind)
+FOR UPDATE OF pending`, id).Scan(&taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	_, systemKind, err := interceptPendingTaskSystemKind(tx, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -189,19 +192,19 @@ FOR UPDATE OF pending`, id).Scan(&systemKind)
 }
 
 // IsSystemTaskInterceptPending reports whether an approval row belongs to a
-// product-owned system task. It intentionally joins by task_id text because
-// intercept_pending predates the task foreign-key model and retains legacy
-// records. The result is safe for global approval endpoints whose route carries
-// only the pending-row id.
+// product-owned system task. A malformed numeric legacy reference is an error
+// rather than a false system result, because global approval endpoints carry
+// only the pending-row ID. Historic opaque labels remain non-task references.
 func (d *DB) IsSystemTaskInterceptPending(id int64) (bool, error) {
-	var systemKind string
-	err := d.QueryRow(`SELECT COALESCE(task.system_kind,'')
-FROM intercept_pending pending
-LEFT JOIN tasks task ON task.id::text=pending.task_id
-WHERE pending.id=$1`, id).Scan(&systemKind)
+	var taskID sql.NullString
+	err := d.QueryRow(`SELECT task_id FROM intercept_pending WHERE id=$1`, id).Scan(&taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	_, systemKind, err := interceptPendingTaskSystemKind(d, taskID)
 	if err != nil {
 		return false, err
 	}

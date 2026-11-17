@@ -43,6 +43,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Security
 
+- **Legacy approval task references fail closed**: global approval, target-pin, execution-evidence and "always allow" paths now reject a noncanonical numeric legacy `intercept_pending.task_id` instead of letting it be compared as text in one guard and parsed as a number in a later sink. The target-pin writer also rechecks immutable system-task ownership inside its write transaction.
 - **Secrets at rest**: the credential-bearing columns and settings (LLM API keys and proxy, task credentials, MCP server env, notification channel config, search and proxy settings), the exec spec of custom tools and the evidence snapshot heads are encrypted in PostgreSQL with AES-256-GCM (`enc:v1:`) using `ARTEX_SECRET_KEY`, else `keys/secret.key`; existing plaintext rows are backfilled once at startup, and a missing or wrong key while encrypted data exists refuses to start. This protects database dumps and backups, not a running instance (#213, #216, #217, #218).
 - **URL credentials are dropped before storage**: scan and bbot ingestion, the asset store and archive restore strip URL userinfo, so `https://user:pass@host/app` is stored and matched as `https://host/app` (#222, #223, #224).
 

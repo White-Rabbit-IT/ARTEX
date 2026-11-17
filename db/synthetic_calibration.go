@@ -612,7 +612,10 @@ SELECT
   + (SELECT count(*) FROM llm_usage WHERE COALESCE(task_id,'')=$3 OR exploration_id=$2)
   + (SELECT count(*) FROM skill_usage WHERE task_id=$1 OR exploration_id=$2)
   + (SELECT count(*) FROM tool_usage WHERE task_id=$1 OR exploration_id=$2)
-  + (SELECT count(*) FROM intercept_pending WHERE COALESCE(task_id,'')=$3)
+  + (SELECT count(*) FROM intercept_pending
+       WHERE COALESCE(task_id,'')=$3
+          OR (task_id ~ '^[+]?[0-9]+$'
+              AND COALESCE(NULLIF(regexp_replace(task_id, '^[+]?0*', ''), ''), '0')=$3))
   + (SELECT count(*) FROM target_pins WHERE task_id=$1)
   + (SELECT count(*) FROM findings WHERE task_id=$1)
   + (SELECT count(*) FROM side_question_sessions WHERE task_id=$1 OR exploration_id=$2)

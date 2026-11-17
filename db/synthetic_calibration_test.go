@@ -166,6 +166,68 @@ VALUES($1,'ready','ready','CAL-00','synthetic fixture','fixed receipt','done') R
 	// Seed stale rows directly and prove that their DB resolution paths cannot
 	// settle them, write pins, or create new target-gate receipts for CAL-00.
 	taskText := fmt.Sprint(task.ID)
+	legacyTaskText := "000" + taskText
+	var legacyTargetPending, legacyClassicPending int64
+	const legacyTargetAudit = `{"targets":[{"host":"cal-legacy.invalid","port":443,"resolved_ips":["198.51.100.42"],"outcome":"requested"}]}`
+	if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit,target_key)
+VALUES($1,'legacy','WebFetch','{}','legacy target','target',$2::jsonb,'cal-legacy.invalid:443') RETURNING id`, legacyTaskText, legacyTargetAudit).Scan(&legacyTargetPending); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit)
+VALUES($1,'legacy','Bash','{}','legacy approval','rule','{}') RETURNING id`, legacyTaskText).Scan(&legacyClassicPending); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := d.ResolveTargetRequest(legacyTargetPending, true, "test", "192.0.2.1"); !errors.Is(err, ErrInvalidInterceptTaskID) || ok {
+		t.Fatalf("resolve noncanonical CAL-00 target request ok=%t err=%v, want false/ErrInvalidInterceptTaskID", ok, err)
+	}
+	if ok, err := d.ResolveInterceptBy(legacyClassicPending, "denied", "deny", "must remain pending", "human", "test", "192.0.2.1"); !errors.Is(err, ErrInvalidInterceptTaskID) || ok {
+		t.Fatalf("resolve noncanonical CAL-00 approval ok=%t err=%v, want false/ErrInvalidInterceptTaskID", ok, err)
+	}
+	if err := d.CompleteIntercept(legacyClassicPending, "legacy-run", "legacy-tool", "done", "must remain pending", false); !errors.Is(err, ErrInvalidInterceptTaskID) {
+		t.Fatalf("complete noncanonical CAL-00 approval err=%v, want ErrInvalidInterceptTaskID", err)
+	}
+	if system, err := d.IsSystemTaskInterceptPending(legacyClassicPending); !errors.Is(err, ErrInvalidInterceptTaskID) || system {
+		t.Fatalf("classify noncanonical CAL-00 approval system=%t err=%v, want false/ErrInvalidInterceptTaskID", system, err)
+	}
+	if _, err := d.CreateInterceptPending(0, 0, legacyTaskText, "worker", "Bash", []byte(`{}`), "must not create"); !errors.Is(err, ErrInvalidInterceptTaskID) {
+		t.Fatalf("create noncanonical CAL-00 approval err=%v, want ErrInvalidInterceptTaskID", err)
+	}
+	if _, err := d.CreateDecidedIntercept(0, 0, legacyTaskText, "worker", "Bash", []byte(`{}`), "denied", "must not create"); !errors.Is(err, ErrInvalidInterceptTaskID) {
+		t.Fatalf("create noncanonical decided CAL-00 approval err=%v, want ErrInvalidInterceptTaskID", err)
+	}
+	var legacyPins, legacyPending int
+	if err := d.QueryRow(`SELECT count(*) FROM target_pins WHERE task_id=$1`, task.ID).Scan(&legacyPins); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM intercept_pending WHERE task_id=$1 AND status='pending'`, legacyTaskText).Scan(&legacyPending); err != nil {
+		t.Fatal(err)
+	}
+	if legacyPins != 0 || legacyPending != 2 {
+		t.Fatalf("noncanonical CAL-00 row changed: pins=%d pending=%d, want 0/2", legacyPins, legacyPending)
+	}
+	if _, err := d.ensureSyntheticCalibrationTask(spec); !errors.Is(err, ErrSyntheticCalibrationConflict) {
+		t.Fatalf("replay with noncanonical CAL-00 approval err=%v, want ErrSyntheticCalibrationConflict", err)
+	}
+	if _, err := d.Exec(`DELETE FROM intercept_pending WHERE task_id=$1`, legacyTaskText); err != nil {
+		t.Fatal(err)
+	}
+	// A pre-task-model opaque label cannot ever pin a task, but a human denial
+	// remains safe and must be able to release the blocked caller.
+	var opaqueTargetPending int64
+	if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit,target_key)
+VALUES('legacy-label','legacy','WebFetch','{}','legacy target','target',$1::jsonb,'opaque-legacy.invalid:443') RETURNING id`, legacyTargetAudit).Scan(&opaqueTargetPending); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := d.ResolveTargetRequest(opaqueTargetPending, true, "test", "192.0.2.1"); !errors.Is(err, ErrInvalidInterceptTaskID) || ok {
+		t.Fatalf("allow opaque legacy target request ok=%t err=%v, want false/ErrInvalidInterceptTaskID", ok, err)
+	}
+	if pin, ok, err := d.ResolveTargetRequest(opaqueTargetPending, false, "test", "192.0.2.1"); err != nil || !ok || pin != nil {
+		t.Fatalf("deny opaque legacy target request pin=%+v ok=%t err=%v, want nil/true/nil", pin, ok, err)
+	}
+	if _, err := d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, opaqueTargetPending); err != nil {
+		t.Fatal(err)
+	}
+
 	var targetPending, classicPending int64
 	if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit,target_key)
 VALUES($1,'stale','WebFetch','{}','stale target','target','{}','cal-stale.invalid:443') RETURNING id`, taskText).Scan(&targetPending); err != nil {
