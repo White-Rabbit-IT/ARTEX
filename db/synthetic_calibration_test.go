@@ -122,6 +122,31 @@ SELECT
 	if _, err := d.QueueTaskArchive(task.ID); !errors.Is(err, ErrSystemTaskImmutable) {
 		t.Fatalf("archive CAL-00 err=%v, want ErrSystemTaskImmutable", err)
 	}
+	// writeTargetPin is intentionally low-level, so it keeps its own final
+	// transaction-local system-task check even if a future caller skips the
+	// pending-row guard above it.
+	pinTx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeTargetPin(pinTx, TargetScopeRef{TaskID: task.ID}, 0, &InterceptTarget{
+		Host: "cal-direct-pin.invalid", Port: 443, ResolvedIPs: []string{"198.51.100.42"},
+	}, "test", "192.0.2.1"); !errors.Is(err, ErrSystemTaskImmutable) {
+		_ = pinTx.Rollback()
+		t.Fatalf("direct CAL-00 target pin err=%v, want ErrSystemTaskImmutable", err)
+	}
+	var directPins int
+	if err := pinTx.QueryRow(`SELECT count(*) FROM target_pins WHERE task_id=$1`, task.ID).Scan(&directPins); err != nil {
+		_ = pinTx.Rollback()
+		t.Fatal(err)
+	}
+	if directPins != 0 {
+		_ = pinTx.Rollback()
+		t.Fatalf("direct CAL-00 pin guard wrote %d in-transaction rows, want 0", directPins)
+	}
+	if err := pinTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate a stale/pre-feature compact record without allowing normal code
 	// to construct one. Every archive lifecycle entry point must refuse it and
@@ -209,6 +234,21 @@ VALUES($1,'legacy','Bash','{}','legacy approval','rule','{}') RETURNING id`, leg
 		t.Fatalf("replay with noncanonical CAL-00 approval err=%v, want ErrSyntheticCalibrationConflict", err)
 	}
 	if _, err := d.Exec(`DELETE FROM intercept_pending WHERE task_id=$1`, legacyTaskText); err != nil {
+		t.Fatal(err)
+	}
+	// The replay query has a separate SQL branch for signed decimal text. Test
+	// it explicitly rather than relying only on the Go parser regression above.
+	plusTaskText := "+" + taskText
+	var plusLegacyPending int64
+	if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit)
+VALUES($1,'legacy','Bash','{}','legacy signed alias','rule','{}') RETURNING id`, plusTaskText).Scan(&plusLegacyPending); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, plusLegacyPending) })
+	if _, err := d.ensureSyntheticCalibrationTask(spec); !errors.Is(err, ErrSyntheticCalibrationConflict) {
+		t.Fatalf("replay with signed CAL-00 approval err=%v, want ErrSyntheticCalibrationConflict", err)
+	}
+	if _, err := d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, plusLegacyPending); err != nil {
 		t.Fatal(err)
 	}
 	// A pre-task-model opaque label cannot ever pin a task, but a human denial

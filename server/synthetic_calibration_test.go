@@ -148,6 +148,43 @@ VALUES($1,'stale','Bash','{}','must remain inert','rule','{}') RETURNING id`, id
 		t.Fatal(err)
 	}
 
+	// Numeric aliases are neither ordinary legacy labels nor a valid CAL-00
+	// reference. Both global mutation endpoints must leave such a raw row
+	// pending, and always-allow must not create a rule from its stored command.
+	var aliasApprovalID int64
+	aliasTaskID := "000" + id
+	if err := g.m.pg.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit)
+VALUES($1,'legacy','Bash','{"command":"git status"}','must remain inert','rule','{}') RETURNING id`, aliasTaskID).Scan(&aliasApprovalID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = g.m.pg.Exec(`DELETE FROM intercept_pending WHERE id=$1`, aliasApprovalID) })
+	aliasPath := "/api/intercept/pending/" + strconv.FormatInt(aliasApprovalID, 10)
+	rulesBefore, err := g.m.pg.ListInterceptRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, decision := range []string{"allowed", "denied"} {
+		if got, body := g.do(t, http.MethodPost, aliasPath+"/decide", `{"decision":"`+decision+`"}`); got != http.StatusConflict {
+			t.Fatalf("decide numeric CAL-00 alias %s: status=%d body=%v, want %d", decision, got, body, http.StatusConflict)
+		}
+	}
+	if got, body := g.do(t, http.MethodPost, aliasPath+"/always-allow", ``); got != http.StatusConflict {
+		t.Fatalf("always-allow numeric CAL-00 alias: status=%d body=%v, want %d", got, body, http.StatusConflict)
+	}
+	if row, err := g.m.pg.GetInterceptPending(aliasApprovalID); err != nil || row == nil || row.Status != "pending" {
+		t.Fatalf("numeric CAL-00 alias row after global routes=%+v err=%v, want pending", row, err)
+	}
+	rulesAfter, err := g.m.pg.ListInterceptRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rulesAfter) != len(rulesBefore) {
+		t.Fatalf("numeric CAL-00 alias created an always-allow rule: before=%d after=%d", len(rulesBefore), len(rulesAfter))
+	}
+	if _, err := g.m.pg.Exec(`DELETE FROM intercept_pending WHERE id=$1`, aliasApprovalID); err != nil {
+		t.Fatal(err)
+	}
+
 	// Cross-task orchestration bypasses the HTTP route prefix, so test its
 	// mutable delegate explicitly. A rejected hint must not append graph data.
 	var nodesBefore int

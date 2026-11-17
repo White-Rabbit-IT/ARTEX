@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -95,6 +96,33 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 			got, err := d.GetInterceptExecution(approval(0, fmt.Sprint(task.ID), callID, true))
 			if err != nil || got.Seq != seq || got.Session != tc.key || len(got.Items) != 2 {
 				t.Fatalf("wrong task session: %+v %v", got, err)
+			}
+		}
+		// A raw legacy alias must not be reinterpreted as this live task when
+		// execution navigation looks up a recorded call. The matching activity
+		// makes this a disclosure-boundary test, not only a parser unit test.
+		const aliasCallID = "legacy-task-id-alias"
+		aliasActivity := Activity{Worker: "work#7", NodeID: &intent, Kind: "tool_use", Tool: "Bash", ToolUseID: aliasCallID, Summary: "pwd"}
+		if _, err := es.AppendActivity(aliasActivity); err != nil {
+			t.Fatal(err)
+		}
+		aliasActivity.Kind = "tool_result"
+		if _, err := es.AppendActivity(aliasActivity); err != nil {
+			t.Fatal(err)
+		}
+		audit, err := json.Marshal(&InterceptAudit{ToolUseID: aliasCallID, Correlation: "exact"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rawTaskID := range []string{"000" + fmt.Sprint(task.ID), "+" + fmt.Sprint(task.ID)} {
+			var aliasApprovalID int64
+			if err := d.QueryRow(`INSERT INTO intercept_pending(task_id,agent_name,tool_name,tool_input,reason,decision_source,audit)
+VALUES($1,'legacy','Bash','{}','legacy numeric alias','rule',$2::jsonb) RETURNING id`, rawTaskID, audit).Scan(&aliasApprovalID); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, aliasApprovalID) })
+			if got, err := d.GetInterceptExecution(aliasApprovalID); !errors.Is(err, ErrInterceptExecutionUnavailable) || got != nil {
+				t.Fatalf("legacy task alias %q navigation got=%+v err=%v, want nil/ErrInterceptExecutionUnavailable", rawTaskID, got, err)
 			}
 		}
 		deletedCall := "deleted-session-call"
