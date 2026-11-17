@@ -70,7 +70,7 @@ On hosts that restrict firewall inspection, run even this no-write plan through
 sudo so it can read the active INPUT rules. Without --apply it still makes no
 firewall, service, Docker, Hermes, or provider change.
 
-`--remove --apply` is the only teardown path. It requires root and removes
+'--remove --apply' is the only teardown path. It requires root and removes
 only a fully validated instance of this helper's exact INPUT jump, owned chain,
 and route file. It installs a temporary top-priority deny before cleanup and
 retains that deny if malformed or externally referenced state is detected.

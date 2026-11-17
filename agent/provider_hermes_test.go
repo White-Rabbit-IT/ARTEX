@@ -46,9 +46,9 @@ func TestHermesSubscriptionConfigIsKeylessAndLocalOnly(t *testing.T) {
 
 func TestDocumentedHermesEndpointRequiresExplicitHermesFormat(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		route     string
-		obscured  []string
+		name     string
+		route    string
+		obscured []string
 	}{
 		{
 			name:  "legacy port",
