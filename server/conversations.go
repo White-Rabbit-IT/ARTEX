@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -103,8 +103,13 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.LLMProfileID != nil {
-		if _, ok := s.loadProfileConfig(*req.LLMProfileID); !ok {
+		cfg, ok := s.loadProfileConfig(*req.LLMProfileID)
+		if !ok {
 			writeErr(w, 400, "The specified LLM profile does not exist or is not usable (no API key for the key-requiring formats)")
+			return
+		}
+		if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
 			return
 		}
 	}
@@ -136,8 +141,13 @@ func (s *Server) pgUpdateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.LLMProfileID != nil {
-		if _, ok := s.loadProfileConfig(*req.LLMProfileID); !ok {
+		cfg, ok := s.loadProfileConfig(*req.LLMProfileID)
+		if !ok {
 			writeErr(w, 400, "The specified LLM profile does not exist or is not usable (no API key for the key-requiring formats)")
+			return
+		}
+		if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
 			return
 		}
 	}
@@ -414,7 +424,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// conversation that picked a valid LLM is not rejected just because no global
 	// config is active.
 	if s.resolveChatAgent(c) == nil {
-		writeErr(w, 503, s.chatUnavailableReason())
+		writeErr(w, 503, s.chatUnavailableReasonFor(c))
 		return
 	}
 
@@ -544,7 +554,7 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	// precedence: the conversation agent's own binding â†’ this conversation's pin â†’ global.
 	ca := s.resolveChatAgent(c)
 	if ca == nil {
-		finishReason = s.chatUnavailableReason()
+		finishReason = s.chatUnavailableReasonFor(c)
 		return
 	}
 	pg := s.m.pg

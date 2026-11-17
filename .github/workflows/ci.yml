@@ -1,4 +1,4 @@
-name: ci
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòname: ci
 
 on:
   push:
@@ -82,8 +82,9 @@ jobs:
       # shellcheck is preinstalled on the ubuntu runners. -S warning: the scripts
       # currently have only info-level notes (intentional A && B || C chains in
       # update.sh, an unquoted glob in backup.sh's prune), so fail on warnings.
-      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh .github/scripts/bot.sh scripts/test-bot-context.sh
+      - run: shellcheck -S warning install.sh update.sh start.sh scripts/backup.sh reset-password.sh scripts/extract-changelog-section.sh scripts/test-extract-changelog-section.sh scripts/run-hermes-observer.sh scripts/test-hermes-observer.sh scripts/provision-hermes-observer.sh .github/scripts/bot.sh scripts/test-bot-context.sh
       - run: bash scripts/test-extract-changelog-section.sh
+      - run: bash scripts/test-hermes-observer.sh
       # The triage bot's repository summary must expose every top-level
       # directory; a truncated file list once made it deny that docs/ and
       # scripts/benchmark/ exist.

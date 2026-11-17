@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -307,6 +307,13 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			var llmIDs []int64
 			if pin != nil {
 				llmIDs = []int64{*pin}
+			}
+			// A subtask can take either an explicit profile or the optional parent
+			// task's pin. Both are real execution routes, so apply the same
+			// calibration-only Hermes policy that the HTTP task-creation endpoint
+			// applies before the task row is created or any task context can run.
+			if err := s.validateTaskProfileIDs(llmIDs); err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
 			// Target gate: a child spawned from a gated scope is gated too, and keeps
 			// the block rules of the calling task. Read from the caller's scope, never

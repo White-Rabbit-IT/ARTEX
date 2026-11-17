@@ -1,4 +1,4 @@
-<div align="center">
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šò<div align="center">
 
 <img src="web/public/logo.svg" width="84" alt="ARTEX logo" />
 
@@ -11,10 +11,10 @@
 Self-hosted multi-agent offensive security. A planner explores, workers run real tools,
 and every finding stays bound to the assets and HTTP traffic that prove it.
 
-[![Release](https://img.shields.io/github/v/release/BaaRai/ARTEX?label=release&color=6b34db)](https://github.com/BaaRai/ARTEX/releases)
-[![License](https://img.shields.io/github/license/BaaRai/ARTEX?color=6b34db)](LICENSE)
-[![CI](https://github.com/BaaRai/ARTEX/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BaaRai/ARTEX/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/github/go-mod/go-version/BaaRai/ARTEX?color=6b34db)](go.mod)
+[![Release](https://img.shields.io/github/v/release/White-Rabbit-IT/ARTEX?label=release&color=6b34db)](https://github.com/White-Rabbit-IT/ARTEX/releases)
+[![License](https://img.shields.io/github/license/White-Rabbit-IT/ARTEX?color=6b34db)](LICENSE)
+[![CI](https://github.com/White-Rabbit-IT/ARTEX/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/White-Rabbit-IT/ARTEX/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/github/go-mod/go-version/White-Rabbit-IT/ARTEX?color=6b34db)](go.mod)
 
 [Quick start](#quick-start) Â· [Screenshots](#screenshots) Â· [How it works](#how-it-works) Â· [Install](#installation) Â· [Configuration](#configuration) Â· [Security](SECURITY.md)
 
@@ -44,7 +44,7 @@ justify it, and every autonomous action passes through scope rules, approval gat
 ## Quick start
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
+git clone https://github.com/White-Rabbit-IT/ARTEX.git
 cd ARTEX
 cp .env.example .env            # set POSTGRES_PASSWORD (and optionally an LLM key)
 docker compose up -d --build    # builds from this checkout, starts PostgreSQL
@@ -305,7 +305,7 @@ worker remains confined to the intent it claimed.
 ### Option 1: one-click install script (recommended)
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
+git clone https://github.com/White-Rabbit-IT/ARTEX.git
 cd ARTEX
 ./install.sh
 ```
@@ -336,10 +336,23 @@ The UI listens on `127.0.0.1` by default. To reach it from another machine (or f
 ARTEX runs inside WSL), set `ARTEX_BIND_ADDR=0.0.0.0` in `.env` (the setup token still protects the
 first-run claim), or keep loopback and use a reverse proxy or SSH tunnel.
 
+### Hermes Subscription Proxy and bot observer
+
+This fork includes a keyless, local-only **Hermes Subscription Proxy** profile. Hermes retains its
+OAuth session; ARTEX stores no Hermes token, rejects public endpoints, and forbids a generic ARTEX
+outbound proxy for that direct-local route. Start with its
+synthetic connection calibration and read [the Hermes profile guide](guides/hermes-subscription-proxy.md)
+before any explicit agent-execution opt-in.
+
+For a separate, metadata-only ARTEX activity feed in a Hermes bot channel, see
+[the Hermes observer guide](guides/hermes-observer.md). The container writes local redacted receipts;
+under its documented trusted-producer boundary, the host-side sender uses the ordinary Hermes CLI
+login and forwards no raw task content, captures, headers, or credentials to the channel.
+
 ### Option 2: Docker Compose (manual)
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
+git clone https://github.com/White-Rabbit-IT/ARTEX.git
 cd ARTEX
 cp .env.example .env            # set POSTGRES_PASSWORD, optionally ANTHROPIC_API_KEY
 docker compose up -d --build
@@ -355,7 +368,7 @@ Legacy SSE servers usually establish the event stream with `GET /sse` and receiv
 
 ### Option 3: prebuilt binaries (Releases)
 
-Download the zip for your platform from [Releases](https://github.com/BaaRai/ARTEX/releases). It
+Download the zip for your platform from [Releases](https://github.com/White-Rabbit-IT/ARTEX/releases). It
 contains `artex`, `start.sh` (`start.bat` on Windows), `skills/` and `config.example.json`:
 
 ```bash
@@ -375,7 +388,7 @@ neither.
 
 ```bash
 sha256sum -c SHA256SUMS                           # add --ignore-missing if you downloaded only some zips
-gh attestation verify <zip> --repo BaaRai/ARTEX   # built by this repository's release workflow
+gh attestation verify <zip> --repo White-Rabbit-IT/ARTEX   # built by this repository's release workflow
 ```
 
 ### Option 4: build the single binary from source

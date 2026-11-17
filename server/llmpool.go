@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"log"
@@ -79,6 +79,12 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 // â€” callers then use the bare provider, which is byte-for-byte the old behavior.
 func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Config) *llmpool.Pool {
 	if s.m == nil || s.m.pg == nil || !s.m.LLMPoolEnabled() {
+		return nil
+	}
+	// Hermes owns a subscription/OAuth route outside ARTEX. It is intentionally
+	// fail-closed: it must never fall through to another saved provider when the
+	// local proxy is unavailable, even if a user enables the global pool later.
+	if headCfg.IsHermesSubscription() {
 		return nil
 	}
 	profs, err := s.m.pg.PoolProfiles()
@@ -200,7 +206,7 @@ func (s *Server) llmPoolStatus() map[string]any {
 		st := health[p.ID]
 		m := LLMPoolMemberStatus{
 			ProfileID: i64s(p.ID), Name: p.Name, Model: p.Model, Format: p.Format,
-			Priority: p.Priority, Active: p.IsDefault, Excluded: p.PoolExclude,
+			Priority: p.Priority, Active: p.IsDefault, Excluded: p.PoolExclude || p.Format == "hermes-subscription",
 			State: "ok", Fails: st.Fails, Trips: st.Trips,
 			LastError: st.LastError,
 		}

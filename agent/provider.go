@@ -1,4 +1,4 @@
-// Package agent wires real LLM-driven planner and work agents (on top of the
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šò// Package agent wires real LLM-driven planner and work agents (on top of the
 // agent-core SDK) to the dual PostgreSQL graph. See the ARTEX architecture design doc
 // Â§4.3 (planner) and Â§4.4 (work agent).
 //
@@ -16,9 +16,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,16 +142,110 @@ const (
 // OpenAI's public endpoint).
 const FormatOllama llm.Format = "ollama"
 
+// FormatHermesSubscription marks a LOCAL Hermes Subscription Proxy profile.
+// Hermes exposes OpenAI-compatible Chat Completions, but authentication happens
+// inside the locally logged-in Hermes process. ARTEX must never receive, store,
+// or forward the OAuth token that Hermes owns.
+//
+// Unlike Ollama, a Hermes endpoint is deliberately not given a magic default:
+// the operator must choose the Docker-to-host bridge address explicitly. This
+// prevents an incomplete profile from silently falling back to api.openai.com.
+const FormatHermesSubscription llm.Format = "hermes-subscription"
+
 // DefaultOllamaBaseURL is the base of Ollama's OpenAI-compatible endpoint the
 // provider appends /chat/completions to. Must never end up empty: with an
 // empty BaseURL, the SDK would fall back to OpenAI's public endpoint.
 const DefaultOllamaBaseURL = "http://127.0.0.1:11434/v1"
+
+// HermesSubscriptionPlaceholderAPIKey is a fixed, non-secret bearer marker for
+// the OpenAI-compatible client. Hermes Subscription Proxy authenticates its
+// upstream request from its own local login and ignores this value. Keeping it
+// fixed makes it impossible for ARTEX to accidentally inherit OPENAI_API_KEY.
+const HermesSubscriptionPlaceholderAPIKey = "hermes-subscription-local"
 
 // ollamaPlaceholderKey is sent as the Bearer token when no key is configured.
 // Ollama ignores authorization, but a concrete value keeps the SDK from
 // falling back to OPENAI_API_KEY (which would silently ship a real cloud key
 // to the local server) and keeps the header stable.
 const ollamaPlaceholderKey = "ollama"
+
+// normalizeHermesSubscriptionBaseURL maps a proxy root or pasted
+// /chat/completions endpoint to the OpenAI-compatible /v1 root. Validation is
+// intentionally separate so ConfigFrom remains a pure normalizer while
+// NewProvider and the server can reject unsafe/unfinished configurations.
+func normalizeHermesSubscriptionBaseURL(raw string) string {
+	b := strings.TrimRight(strings.TrimSuffix(strings.TrimSpace(raw), "/chat/completions"), "/")
+	if b == "" || strings.HasSuffix(b, "/v1") {
+		return b
+	}
+	return b + "/v1"
+}
+
+// ValidateHermesSubscriptionBaseURL validates a local-only Hermes Subscription
+// Proxy endpoint and returns its canonical /v1 root. The proxy has no separate
+// inbound authentication, so ARTEX deliberately refuses public or arbitrary
+// remote destinations for this keyless provider.
+func ValidateHermesSubscriptionBaseURL(raw string) (string, error) {
+	base := normalizeHermesSubscriptionBaseURL(raw)
+	if base == "" {
+		return "", fmt.Errorf("hermes subscription proxy base URL is required")
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("hermes subscription proxy must be a plain local http URL ending in /v1")
+	}
+	if strings.TrimRight(u.Path, "/") != "/v1" {
+		return "", fmt.Errorf("hermes subscription proxy URL must end in /v1")
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "localhost", "host.docker.internal", "gateway.docker.internal":
+		return base, nil
+	}
+	ip, err := netip.ParseAddr(host)
+	if err == nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return base, nil
+	}
+	return "", fmt.Errorf("hermes subscription proxy host must be localhost, a Docker host alias, or a private/loopback IP")
+}
+
+// IsDocumentedHermesSubscriptionBaseURL identifies the documented default
+// Hermes proxy port. Endpoint URLs have no cryptographic provider identity, so
+// ARTEX cannot safely infer that an arbitrary private OpenAI-compatible service
+// is Hermes. It does recognize this reserved local route to prevent the common
+// configuration mistake of selecting generic OpenAI while pointing it at the
+// Hermes proxy, which could otherwise forward an API key to a keyless service.
+//
+// Non-default local OpenAI-compatible services remain supported as generic
+// providers on other ports. Port 8645 is reserved for Hermes in this fork;
+// operators who run Hermes on a custom port must select the explicit
+// hermes-subscription format, because no endpoint-only heuristic is treated as
+// proof of Hermes identity.
+func IsDocumentedHermesSubscriptionBaseURL(raw string) bool {
+	// Do not normalize first. This is a rejection detector for generic formats,
+	// not the strict Hermes-profile validator: a query, fragment, or alternate
+	// path must not hide the reserved route. HTTP strips a fragment before sending
+	// a request, and a permissive proxy can still receive a bearer key on a
+	// non-canonical OpenAI-compatible path.
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return false
+	}
+	port, portErr := strconv.Atoi(u.Port())
+	if portErr != nil || !strings.EqualFold(u.Scheme, "http") || port != 8645 {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" || host == "host.docker.internal" || host == "gateway.docker.internal" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+func genericHermesSubscriptionEndpointError() error {
+	return fmt.Errorf("the documented local Hermes Subscription Proxy endpoint requires provider format hermes-subscription")
+}
 
 // normalizeOllamaBaseURL maps whatever the operator typed onto the /v1 root the
 // OpenAI-compatible provider expects: it strips a pasted "/chat/completions"
@@ -168,9 +264,16 @@ func normalizeOllamaBaseURL(raw string) string {
 	return b
 }
 
+// IsHermesSubscription reports whether this config uses a local Hermes
+// Subscription Proxy rather than a provider credential held by ARTEX.
+func (c Config) IsHermesSubscription() bool { return c.Format == FormatHermesSubscription }
+
 // NeedsAPIKey reports whether this provider format requires an API key to be
-// usable. Ollama (local server) is keyless; every cloud format needs one.
-func (c Config) NeedsAPIKey() bool { return c.Format != FormatOllama }
+// usable. Ollama and Hermes Subscription Proxy are keyless from ARTEX's point
+// of view; every cloud format needs one.
+func (c Config) NeedsAPIKey() bool {
+	return c.Format != FormatOllama && c.Format != FormatHermesSubscription
+}
 
 // CompactionWindow returns the model context window in TOKENS for compaction
 // thresholds, resolved from the user-configured size (ContextWindowK). 0/unset â†’
@@ -201,7 +304,7 @@ func compactionConfig(windowTokens int) *compaction.Config {
 
 // FromEnv resolves the LLM provider config:
 //
-//	ARTEX_LLM_PROVIDER = anthropic|openai|openai-responses|ollama (default: inferred from keys)
+//	ARTEX_LLM_PROVIDER = anthropic|openai|openai-responses|ollama|hermes-subscription (default: inferred from keys)
 //	ARTEX_LLM_MODEL    = model id        (default: per provider)
 //	ARTEX_LLM_BASE_URL = endpoint        (optional; ollama defaults to localhost:11434/v1)
 //	ARTEX_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
@@ -255,12 +358,38 @@ func FromEnv() (Config, bool) {
 		if c.Model == "" {
 			c.Model = "llama3.2"
 		}
+	case "hermes", "hermes-subscription":
+		c.Format = FormatHermesSubscription
+		// Never inherit OPENAI_API_KEY: Hermes owns the subscription OAuth
+		// state locally and ARTEX must not carry another provider credential.
+		c.APIKey = ""
+		// A generic outbound proxy would make a syntactically local endpoint
+		// route its prompts through an arbitrary remote hop. Hermes must be a
+		// direct local transport, so a global proxy configuration disables this
+		// environment-derived profile rather than silently weakening the route.
+		if c.Proxy != "" {
+			return Config{}, false
+		}
+		if c.Model == "" {
+			return Config{}, false
+		}
+		var err error
+		if c.BaseURL, err = ValidateHermesSubscriptionBaseURL(c.BaseURL); err != nil {
+			return Config{}, false
+		}
 	default:
 		c.Format = llm.FormatAnthropic
 		c.APIKey = anthKey
 		if c.Model == "" {
 			c.Model = "claude-opus-4-8"
 		}
+	}
+	// Do not let the documented keyless Hermes route inherit OPENAI_API_KEY
+	// merely because ARTEX_LLM_PROVIDER was left at generic "openai". Endpoint
+	// identity is otherwise ambiguous for custom local gateways; the supported
+	// Hermes lane is intentionally selected by an explicit provider format.
+	if !c.IsHermesSubscription() && IsDocumentedHermesSubscriptionBaseURL(c.BaseURL) {
+		return Config{}, false
 	}
 	// Ollama runs without a key: only the cloud formats gate on one.
 	if c.APIKey == "" && c.NeedsAPIKey() {
@@ -306,6 +435,16 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 		if c.Model == "" {
 			c.Model = "llama3.2"
 		}
+	case "hermes", "hermes-subscription":
+		c.Format = FormatHermesSubscription
+		// The OAuth credential belongs to Hermes. Ignore any value pasted in
+		// the generic key field so it can never be stored or sent by ARTEX.
+		c.APIKey = ""
+		// A generic LLM proxy turns a local-only endpoint into remote egress.
+		// ConfigFrom has no error result, so normalize this caller-supplied
+		// value away; NewProvider still rejects legacy direct Config values.
+		c.Proxy = ""
+		c.BaseURL = normalizeHermesSubscriptionBaseURL(c.BaseURL)
 	default:
 		c.Format = llm.FormatAnthropic
 		// provider appends "/v1/messages".
@@ -328,7 +467,7 @@ func isFalsy(s string) bool {
 }
 
 // Provider returns the short provider name
-// ("anthropic"/"openai"/"openai-responses"/"ollama").
+// ("anthropic"/"openai"/"openai-responses"/"ollama"/"hermes-subscription").
 func (c Config) Provider() string {
 	switch c.Format {
 	case llm.FormatOpenAI:
@@ -337,6 +476,8 @@ func (c Config) Provider() string {
 		return "openai-responses"
 	case FormatOllama:
 		return "ollama"
+	case FormatHermesSubscription:
+		return "hermes-subscription"
 	}
 	return "anthropic"
 }
@@ -345,13 +486,22 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance â€” so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.UserAgent)
-	if err != nil {
-		return nil, err
-	}
 	wireFormat := c.Format
 	baseURL := c.BaseURL
 	apiKey := c.APIKey
+	isHermesSubscription := wireFormat == FormatHermesSubscription
+	if !isHermesSubscription && IsDocumentedHermesSubscriptionBaseURL(baseURL) {
+		// A generic OpenAI profile at the documented Hermes endpoint cannot prove
+		// it owns a safe key. Refuse before a cloud key, custom header, or prompt
+		// can be sent there; users must choose the explicit keyless local format.
+		return nil, genericHermesSubscriptionEndpointError()
+	}
+	if isHermesSubscription && strings.TrimSpace(c.Proxy) != "" {
+		// Do not let an old database row or direct caller bypass ConfigFrom's
+		// normalization. The proxy is part of Hermes's local transport boundary,
+		// not an ARTEX-configurable egress route.
+		return nil, fmt.Errorf("hermes subscription proxy does not permit an ARTEX outbound proxy")
+	}
 	// Ollama speaks OpenAI's Chat Completions on the wire. Bundle the keyless
 	// defaults here so an Ollama config can never leak toward the SDK's env-
 	// driven fallbacks: BaseURL to OpenAI's public endpoint, APIKey to
@@ -364,6 +514,29 @@ func (c Config) NewProvider() (llm.Provider, error) {
 		}
 		if strings.TrimSpace(apiKey) == "" {
 			apiKey = ollamaPlaceholderKey
+		}
+	}
+	if isHermesSubscription {
+		var err error
+		baseURL, err = ValidateHermesSubscriptionBaseURL(baseURL)
+		if err != nil {
+			return nil, err
+		}
+		wireFormat = llm.FormatOpenAI
+		// Do not use Config.APIKey even if a legacy database row happens to
+		// contain one. This marker is deliberately public and inert.
+		apiKey = HermesSubscriptionPlaceholderAPIKey
+	}
+	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.UserAgent)
+	if err != nil {
+		return nil, err
+	}
+	if isHermesSubscription {
+		// The initial base URL is local-only, but a compromised local proxy could
+		// otherwise issue a 307/308 to a public host and make net/http replay the
+		// request body there. This route is deliberately one-hop only.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
 		}
 	}
 	lc := llm.Config{

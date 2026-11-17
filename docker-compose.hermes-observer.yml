@@ -1,0 +1,15 @@
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šò# Optional Compose overlay for the metadata-only Hermes observer. It is not
+# included by the ordinary stack: the host directory must first be provisioned
+# by scripts/provision-hermes-observer.sh as a root-owned, group-readable
+# directory. `create_host_path: false` makes a missing provisioning step fail
+# instead of silently creating a user-writable fallback.
+services:
+  artex:
+    environment:
+      ARTEX_HERMES_OBSERVER_DIR: /app/hermes-observer
+    volumes:
+      - type: bind
+        source: ${ARTEX_HERMES_OBSERVER_HOST_DIR:?run scripts/provision-hermes-observer.sh and set ARTEX_HERMES_OBSERVER_HOST_DIR first}
+        target: /app/hermes-observer
+        bind:
+          create_host_path: false

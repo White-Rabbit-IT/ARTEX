@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -196,6 +196,12 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	if err := r.s.agentBindingExecutionError(r.agentKey); err != nil {
+		// Unlike an invalid/deleted binding, a deliberately disabled Hermes
+		// binding is a policy stop: do not fall through and send this task's
+		// context to its chain or global provider.
+		return sel, err
+	}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
@@ -215,6 +221,9 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 		}
 		prov, cfg, ok := r.s.providerForProfile(sel.profileID)
 		if !ok {
+			if err := r.s.profileAgentExecutionError(sel.profileID); err != nil {
+				return sel, err
+			}
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
 		sel.provider, sel.retry = prov, cfg.Retry
@@ -222,6 +231,9 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	}
 	prov, cfg, ok := r.s.globalProvider()
 	if !ok {
+		if err := r.s.globalAgentExecutionError(); err != nil {
+			return sel, err
+		}
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
 	sel.provider, sel.retry = prov, cfg.Retry
@@ -677,6 +689,9 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 	if id == nil {
 		return nil, agent.Config{}, false
 	}
+	if s.profileAgentExecutionError(*id) != nil {
+		return nil, agent.Config{}, false
+	}
 	prov, cfg, ok := s.providerForProfile(*id)
 	if !ok {
 		return nil, agent.Config{}, false
@@ -692,6 +707,9 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 	defer s.cfgMu.Unlock()
 	if !s.llmOn || s.llmProv == nil {
 		return nil, agent.Config{}, false
+	}
+	if hermesSubscriptionAgentExecutionError(s.llmCfg) != nil {
+		return nil, s.llmCfg, false
 	}
 	return s.llmProv, s.llmCfg, true
 }
@@ -714,6 +732,12 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 		_, _, unboundReady = s.globalProvider()
 	}
 	for _, key := range agentKeys {
+		if s.agentBindingExecutionError(key) != nil {
+			// A blocked explicit binding is intentionally not treated as an
+			// ordinary unavailable binding: it must not fall through to a
+			// task/global profile.
+			return false
+		}
 		if _, _, ok := s.agentBindingProvider(key); ok {
 			continue
 		}

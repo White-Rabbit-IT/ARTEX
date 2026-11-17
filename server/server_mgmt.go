@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"archive/zip"
@@ -381,8 +381,13 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if id != nil { // bind: validate the target profile
-			if _, ok := s.loadProfileConfig(*id); !ok {
+			cfg, ok := s.loadProfileConfig(*id)
+			if !ok {
 				writeErr(w, 400, "the specified LLM profile does not exist or is invalid")
+				return
+			}
+			if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+				writeErr(w, http.StatusConflict, err.Error())
 				return
 			}
 		}
@@ -1974,6 +1979,52 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	hermesFormat := p.Format == "hermes" || p.Format == "hermes-subscription"
+	if !hermesFormat && agent.IsDocumentedHermesSubscriptionBaseURL(p.BaseURL) {
+		writeErr(w, http.StatusBadRequest, "the documented local Hermes Subscription Proxy endpoint requires provider format hermes-subscription")
+		return
+	}
+	if hermesFormat {
+		// Keep the stored format canonical while accepting the documented legacy
+		// input alias used by ConfigFrom.
+		p.Format = "hermes-subscription"
+		// Hermes Subscription Proxy is a local, keyless OpenAI-compatible
+		// endpoint. Validate the transport now (rather than persist a profile
+		// which can only fail later), clear any accidentally supplied API key,
+		// and lock it out of ARTEX's generic failover pool.
+		baseURL, err := agent.ValidateHermesSubscriptionBaseURL(p.BaseURL)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(p.Model) == "" {
+			writeErr(w, http.StatusBadRequest, "hermes subscription proxy model is required")
+			return
+		}
+		p.BaseURL = baseURL
+		p.APIKey = ""
+		p.ClearAPIKey = true
+		// Hermes is direct-only. Clear a proxy from a format conversion or an
+		// older UI/API client instead of retaining an unused egress credential.
+		// This must happen before the masked-proxy fallback below.
+		p.Proxy = ""
+		p.PoolExclude = true
+		// Saving a new Hermes profile is safe: it stays inactive and can be
+		// used for the deliberately narrow connection test. Updating the
+		// currently active row would, however, activate its task/chat route as
+		// a side effect of the profile edit. Refuse that state transition before
+		// touching the database while this provider remains calibration-only.
+		if active, err := pg.ActiveProfile(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		} else if active != nil && active.ID == p.ID {
+			cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+			if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+				writeErr(w, http.StatusConflict, err.Error())
+				return
+			}
+		}
+	}
 	// The list returns the proxy masked: the placeholder sent back keeps the
 	// stored proxy and is never stored itself.
 	if isMaskedSecret(p.Proxy) {
@@ -2112,6 +2163,16 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// Hermes Subscription Proxy profiles can be saved and connection-tested
+	// without enabling autonomous agent execution. Do not let the ordinary
+	// "make active" operation turn such a calibration-only profile into the
+	// global task/chat route before the explicit process-level opt-in exists.
+	if cfg, ok := s.loadProfileConfig(body.ID); ok {
+		if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	if err := pg.SetActiveProfile(body.ID); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -2156,13 +2217,14 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 }
 
 // pgListModels fetches available models from the provider's API endpoint.
-// Supports OpenAI-format (GET /models), Anthropic-format (GET /v1/models) and
-// Ollama (keyless OpenAI-compatible GET /v1/models on the local server); for
-// Anthropic-compatible third parties (e.g. DeepSeek) whose model list lives only on
-// the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
+// Supports OpenAI-format (GET /models), Anthropic-format (GET /v1/models), and
+// keyless OpenAI-compatible local endpoints (Ollama and Hermes Subscription
+// Proxy). For Anthropic-compatible third parties (e.g. DeepSeek) whose model
+// list lives only on the OpenAI path, it falls back to the OpenAI endpoint at
+// the stripped root.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string `json:"provider"` // "openai" | "anthropic" | "ollama"
+		Provider  string `json:"provider"` // "openai" | "anthropic" | "ollama" | "hermes-subscription"
 		BaseURL   string `json:"base_url"`
 		APIKey    string `json:"api_key"`
 		Proxy     string `json:"proxy"`
@@ -2170,6 +2232,14 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	if provider != "hermes" && provider != "hermes-subscription" && agent.IsDocumentedHermesSubscriptionBaseURL(req.BaseURL) {
+		// Reject before stored-key lookup: a generic form/provider label at the
+		// documented local Hermes route must never turn a profile key into a
+		// bearer token for a keyless proxy.
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "the documented local Hermes Subscription Proxy endpoint requires provider format hermes-subscription"})
 		return
 	}
 	// Resolve API key: form input > profile stored key. The stored key is only
@@ -2193,9 +2263,19 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	provider := strings.TrimSpace(req.Provider)
-	// Ollama serves its model list keyless on the local server: no key gate.
-	if apiKey == "" && provider != "ollama" {
+	if provider == "hermes" || provider == "hermes-subscription" {
+		// Model discovery creates its own HTTP client rather than going through
+		// agent.Config.NewProvider. Preserve the same direct-only boundary here:
+		// never turn a local Hermes endpoint into arbitrary proxy egress.
+		if strings.TrimSpace(req.Proxy) != "" {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": "hermes subscription proxy does not permit an ARTEX outbound proxy"})
+			return
+		}
+	}
+	// Ollama and Hermes Subscription Proxy serve their model lists through a
+	// local OpenAI-compatible endpoint: neither needs an ARTEX-held API key.
+	keyless := provider == "ollama" || provider == "hermes" || provider == "hermes-subscription"
+	if apiKey == "" && !keyless {
 		msg := "no API Key provided"
 		if withheld {
 			msg = "no API Key provided: the saved key is only sent to the endpoint it was saved for; enter the key to list models from a different base URL or provider"
@@ -2252,6 +2332,18 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			hdr.Set("Authorization", "Bearer "+apiKey)
 		}
 		candidates = append(candidates, candidate{b + "/models", hdr})
+	case "hermes", "hermes-subscription":
+		b, err := agent.ValidateHermesSubscriptionBaseURL(baseURL)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		// Hermes authenticates the upstream subscription through its own local
+		// login. Send only the fixed inert marker expected by OpenAI-compatible
+		// clients; never use a form, database, or environment API key.
+		hdr := http.Header{}
+		hdr.Set("Authorization", "Bearer "+agent.HermesSubscriptionPlaceholderAPIKey)
+		candidates = append(candidates, candidate{b + "/models", hdr})
 	default: // anthropic
 		if baseURL == "" {
 			baseURL = "https://api.anthropic.com"
@@ -2276,6 +2368,14 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	if provider == "hermes" || provider == "hermes-subscription" {
+		// The model-list endpoint is an independent HTTP path, not an agent
+		// provider. Apply the same one-hop local rule so a local proxy cannot
+		// redirect a metadata request to another host.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 
 	// Try each candidate; return the first that yields a non-empty model list.
 	var lastErr string

@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -166,6 +166,18 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1),
 		loginLimit: newLoginLimiter(time.Now)}
+	// This is only a local, metadata-only outbox. It does not configure an LLM,
+	// invoke Hermes, open a network connection, or read Hermes credentials.
+	// Its single writer owns the filesystem Root and closes it only after it has
+	// stopped, so cancellation cannot race a receipt write with Root.Close.
+	observer := newHermesObserverFromEnv()
+	s.engine.SetHermesObserver(observer)
+	if observer != nil && ctx != nil {
+		go func() {
+			<-ctx.Done()
+			observer.close()
+		}()
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -404,6 +416,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
+		ClearAPIKey:    cfg.IsHermesSubscription(),
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey, UserAgent: userAgent,
@@ -457,6 +470,13 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
+	if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+		// Keep profile configuration and its explicit connection-test path intact,
+		// but never leave a stale global agent/provider usable after activation of
+		// a calibration-only Hermes profile.
+		s.disableHermesSubscriptionRuntime(cfg)
+		return err
+	}
 	var prov llm.Provider
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
@@ -567,9 +587,17 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	ca := s.chatAgentRef()
 	if eff := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID); eff != nil {
+		if s.profileAgentExecutionError(*eff) != nil {
+			// A deliberately selected/bound Hermes profile must not quietly fall
+			// back to the global ChatAgent and send the turn elsewhere.
+			return nil
+		}
 		if pa := s.chatAgentForProfile(*eff); pa != nil {
 			ca = pa
 		}
+	}
+	if s.globalAgentExecutionError() != nil {
+		return nil
 	}
 	return ca
 }
@@ -578,6 +606,9 @@ func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 // knows whether to add a config, activate one, or pick one for this conversation
 // â€” rather than a flat "not configured" that hides which of those it is.
 func (s *Server) chatUnavailableReason() string {
+	if err := s.globalAgentExecutionError(); err != nil {
+		return err.Error()
+	}
 	if s.m.pg != nil {
 		if profiles, err := s.m.pg.ListProfiles(); err == nil && len(profiles) == 0 {
 			return "No LLM configured yet: go to System â†’ LLM Profiles to add one"
@@ -589,6 +620,20 @@ func (s *Server) chatUnavailableReason() string {
 	return "LLM not ready for chat: check that System â†’ LLM Profiles has a usable, activated profile"
 }
 
+// chatUnavailableReasonFor preserves the ordinary configuration guidance while
+// surfacing a policy denial for a profile explicitly selected by this
+// conversation or its agent binding.
+func (s *Server) chatUnavailableReasonFor(c *db.Conversation) string {
+	if c != nil {
+		if eff := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID); eff != nil {
+			if err := s.profileAgentExecutionError(*eff); err != nil {
+				return err.Error()
+			}
+		}
+	}
+	return s.chatUnavailableReason()
+}
+
 // providerForProfile returns a cached provider+cfg for a profile id, so every agent
 // bound/pinned to the same profile shares one provider instance (one rate limiter).
 // ok=false when the profile is missing/invalid â†’ caller falls back to the global pair.
@@ -596,6 +641,9 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	s.provCacheMu.Lock()
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
+		if hermesSubscriptionAgentExecutionError(e.cfg) != nil {
+			return nil, e.cfg, false
+		}
 		return e.prov, e.cfg, true
 	}
 	generation := s.provCacheGen
@@ -603,6 +651,9 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	cfg, ok := s.loadProfileConfig(id)
 	if !ok {
 		return nil, agent.Config{}, false
+	}
+	if hermesSubscriptionAgentExecutionError(cfg) != nil {
+		return nil, cfg, false
 	}
 	prov, err := cfg.NewProvider()
 	if err != nil {
@@ -632,15 +683,18 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
 // per profile id. Returns nil if the profile is missing or has no API key.
 func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
+	// Resolve the provider before consulting the ChatAgent cache. This makes the
+	// environment gate effective even for a profile agent built before an
+	// operator removed the explicit opt-in.
+	prov, cfg, ok := s.providerForProfile(id)
+	if !ok {
+		return nil
+	}
 	s.profMu.Lock()
 	cached := s.profChatAgents[id]
 	s.profMu.Unlock()
 	if cached != nil {
 		return cached
-	}
-	prov, cfg, ok := s.providerForProfile(id)
-	if !ok {
-		return nil
 	}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
@@ -1422,6 +1476,13 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "api_key required")
 		return
 	}
+	if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+		// The legacy global-config endpoint installs a task/chat runtime, unlike
+		// the profile connection-test endpoint. Refuse before persistence so it
+		// cannot replace a usable active profile with a calibration-only one.
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	// Validate provider construction before persisting it as the active profile.
 	if _, err := cfg.NewProvider(); err != nil {
 		writeErr(w, 400, "provider init failed: "+err.Error())
@@ -1507,6 +1568,21 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
+	if !cfg.IsHermesSubscription() && agent.IsDocumentedHermesSubscriptionBaseURL(req.BaseURL) {
+		// Do this before key fallback. A generic profile at the documented local
+		// Hermes route could otherwise receive a stored cloud API key even though
+		// the supported Hermes integration is keyless and calibration-gated.
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "the documented local Hermes Subscription Proxy endpoint requires provider format hermes-subscription"})
+		return
+	}
+	if cfg.IsHermesSubscription() && strings.TrimSpace(req.Proxy) != "" {
+		// ConfigFrom deliberately drops a proxy for Hermes as a final runtime
+		// defense. Return an explicit calibration failure here as well, rather
+		// than silently accepting an old stored profile or form value that would
+		// weaken the documented direct-local transport boundary.
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "hermes subscription proxy does not permit an ARTEX outbound proxy"})
+		return
+	}
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ThinkingType = req.ThinkingType
@@ -1746,8 +1822,12 @@ func (s *Server) validateTaskProfileIDs(ids []int64) error {
 			return fmt.Errorf("invalid or duplicate LLM profile id")
 		}
 		seen[id] = true
-		if _, ok := s.loadProfileConfig(id); !ok {
+		cfg, ok := s.loadProfileConfig(id)
+		if !ok {
 			return fmt.Errorf("LLM profile #%d not found or not usable (no API key for the key-requiring formats)", id)
+		}
+		if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+			return fmt.Errorf("LLM profile #%d: %w", id, err)
 		}
 	}
 	return nil

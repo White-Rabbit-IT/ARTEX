@@ -1,9 +1,10 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"fmt"
 	"net/http"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -29,9 +30,15 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		Model:     p.Model,
 		Source:    source,
 	}
-	// Ollama profiles are keyless by design; the other formats need a key.
-	if p.APIKey == "" && p.Format != "ollama" {
+	// Ollama and Hermes Subscription Proxy profiles are keyless by design;
+	// other formats need a key.
+	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	if p.APIKey == "" && cfg.NeedsAPIKey() {
 		result.Reason = "LLM profile has no API Key set"
+		return result
+	}
+	if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+		result.Reason = err.Error()
 		return result
 	}
 	if _, _, ok := s.providerForProfile(p.ID); !ok {
@@ -60,7 +67,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		}
 		if p != nil {
 			resolved := s.resolutionFromProfile(p, "agent_binding")
-			if resolved.Available {
+			if resolved.Available || hermesSubscriptionAgentExecutionError(agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)) != nil {
 				return resolved, nil
 			}
 		}
@@ -82,9 +89,12 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 	}
 	if p != nil {
 		resolved := s.resolutionFromProfile(p, "global_profile")
-		if resolved.Available {
+		if resolved.Available || hermesSubscriptionAgentExecutionError(agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)) != nil {
 			return resolved, nil
 		}
+	}
+	if err := s.globalAgentExecutionError(); err != nil {
+		return taskLLMResolution{Source: "global", Reason: err.Error()}, nil
 	}
 	s.cfgMu.Lock()
 	on, name, cfg := s.llmOn, s.llmProf, s.llmCfg

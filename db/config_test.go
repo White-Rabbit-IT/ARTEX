@@ -1,4 +1,4 @@
-package db
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage db
 
 import (
 	"context"
@@ -59,6 +59,42 @@ func TestPoolProfilesOrder(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != hi || got[1] != lo {
 		t.Fatalf("chain order = %v, want [hi=%d lo=%d]", got, hi, lo)
+	}
+}
+
+// An empty key usually preserves an existing credential during a profile edit.
+// Keyless Hermes Subscription Proxy profiles are the deliberate exception: a
+// format change must remove a previously stored cloud key, rather than retain
+// it and risk an accidental later reuse.
+func TestSaveProfileClearAPIKey(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) â€” skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	sfx := fmt.Sprintf("-%d", time.Now().UnixNano())
+	id, err := d.SaveProfile(&LLMProfile{
+		Name: "t-clear-profile-key" + sfx, Format: "openai", Model: "gpt-test", APIKey: "cloud-key-to-clear",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { deleteTestProfile(t, d, id) })
+
+	_, err = d.SaveProfile(&LLMProfile{
+		ID: id, Name: "t-clear-profile-key" + sfx, Format: "hermes-subscription",
+		Model: "openai/gpt-test", BaseURL: "http://127.0.0.1:8645/v1", ClearAPIKey: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.ProfileByID(id)
+	if err != nil || stored == nil {
+		t.Fatalf("ProfileByID: profile=%+v err=%v", stored, err)
+	}
+	if stored.Format != "hermes-subscription" || stored.APIKey != "" {
+		t.Fatalf("keyless update persisted format/key = %q/%q, want hermes-subscription/empty", stored.Format, stored.APIKey)
 	}
 }
 

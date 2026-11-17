@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -195,11 +195,17 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 		if !exists || sideModel(current, model.ProfileID, model.Name).Identity != model.Identity {
 			return nil, errors.New("the model profile was deleted or changed; run the main Agent first to refresh the context")
 		}
+		if err := hermesSubscriptionAgentExecutionError(current); err != nil {
+			return nil, err
+		}
 		p, cfg, ok = s.providerForProfile(model.ProfileID)
 	} else {
 		s.cfgMu.Lock()
 		p, cfg, ok = s.llmDirect, s.llmCfg, s.llmOn
 		s.cfgMu.Unlock()
+		if err := hermesSubscriptionAgentExecutionError(cfg); err != nil {
+			return nil, err
+		}
 	}
 	if !ok || p == nil || sideModel(cfg, model.ProfileID, model.Name).Identity != model.Identity {
 		return nil, errors.New("the model profile was deleted or changed; run the main Agent first to refresh the context")

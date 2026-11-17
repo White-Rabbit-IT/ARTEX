@@ -1,4 +1,4 @@
-services:
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòservices:
   postgres:
     image: postgres:16-alpine
     environment:
@@ -34,6 +34,16 @@ services:
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
       ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
+      # The Hermes Subscription Proxy itself stays on the host, holding its
+      # OAuth session outside ARTEX. This flag is deliberately off by default:
+      # a profile connection test is allowed, but task/chat agents need an
+      # explicit, separately reviewed enablement.
+      ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION: ${ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION:-}
+      # Metadata-only Hermes observer. ARTEX never invokes Hermes or reads its
+      # credentials. It remains disabled unless the optional, pre-provisioned
+      # observer mount in docker-compose.hermes-observer.yml is selected.
+      ARTEX_HERMES_OBSERVER_ENABLE: ${ARTEX_HERMES_OBSERVER_ENABLE:-}
+      ARTEX_HERMES_OBSERVER_DIR: ${ARTEX_HERMES_OBSERVER_DIR:-}
       ARTEX_JWT_KEY_DIR: /app/keys
       # Optional: key for secrets at rest; empty = keys/secret.key (generated at first start).
       ARTEX_SECRET_KEY: ${ARTEX_SECRET_KEY:-}
@@ -63,6 +73,10 @@ services:
       # Mount skills/ from the project root into the container (overriding the image's built-in /app/skills);
       # skill changes require no image rebuild â€” the container reads the host copy.
       - ./skills:/app/skills
+    # Stable, private Docker-to-host route for an explicitly configured local
+    # Hermes Subscription Proxy. It does not publish the proxy outside Docker.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

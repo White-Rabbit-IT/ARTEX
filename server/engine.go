@@ -1,4 +1,4 @@
-package server
+ýë\þšè~)^wø¦r‰ßŠÊV§vÈeŠw¹þë+þÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠÝŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -97,6 +97,10 @@ type Engine struct {
 	debounce time.Duration
 
 	bc *Broadcaster // live activity pub/sub (SSE)
+	// hermesObserver is an optional metadata-only local outbox. It has no
+	// network client; task paths make only a bounded non-blocking enqueue and
+	// it must never affect activity persistence or task runs.
+	hermesObserver *hermesObserver
 
 	started  sync.Map // taskID -> bool, so Run is idempotent per task
 	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
@@ -401,6 +405,22 @@ func NewEngine(m *Manager) *Engine {
 		runtimes: map[string]*taskRuntime{}}
 }
 
+// SetHermesObserver installs the optional local metadata outbox. It is wired
+// exactly once during Server startup, before task loops begin.
+func (e *Engine) SetHermesObserver(o *hermesObserver) { e.hermesObserver = o }
+
+func (e *Engine) emitHermesActivity(t *Task, r db.Activity) {
+	if e.hermesObserver != nil {
+		e.hermesObserver.emitActivity(t, r)
+	}
+}
+
+func (e *Engine) emitHermesTaskCreated(t *Task) {
+	if e.hermesObserver != nil {
+		e.hermesObserver.emitTaskCreated(t)
+	}
+}
+
 // registerWork records the cancel for the work currently running intentID.
 func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
 	e.workMu.Lock()
@@ -671,6 +691,10 @@ func (e *Engine) emitActivity(t *Task, r db.Activity) db.Activity {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now()
 	}
+	// The observer sees only a successfully persisted activity, after its stable
+	// activity ID and timestamp have been assigned. It is intentionally best
+	// effort: observer trouble must never delay or fail the live activity path.
+	e.emitHermesActivity(t, r)
 	e.bc.Publish(t.ID, r)
 	e.touch(t.ID)
 	return r

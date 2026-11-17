@@ -1,4 +1,4 @@
-package server
+ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šòpackage server
 
 import (
 	"context"
@@ -29,6 +29,10 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 	if !s.engine.beginTaskOperation(t.ID) {
 		return
 	}
+	// Both HTTP task creation and spawn_task share this path. The optional
+	// observer records only opaque task/exploration IDs and a timestamp; it never
+	// sees seedText, description, goal, target, or credentials.
+	s.engine.emitHermesTaskCreated(t)
 	s.seed(t, seedText)
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
