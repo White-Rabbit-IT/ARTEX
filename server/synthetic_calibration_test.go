@@ -126,7 +126,8 @@ WHERE link.task_id=$1`, numericID).Scan(&fixtureAssetID, &fixtureBundleID); err 
 	}
 
 	// A normal child task must not turn CAL-00 into inherited task context.
-	if got, body := g.do(t, http.MethodPost, "/api/tasks", `{"description":"must not inherit CAL-00","goal":"verify source rejection","source_task_ids":["`+id+`"]}`); got != http.StatusConflict {
+	inheritBody := `{"description":"must not inherit CAL-00","goal":` + strconv.Quote(gateTestGoal) + `,"source_task_ids":["` + id + `"]}`
+	if got, body := g.do(t, http.MethodPost, "/api/tasks", inheritBody); got != http.StatusConflict {
 		t.Fatalf("inherit CAL-00: status=%d body=%v, want %d", got, body, http.StatusConflict)
 	}
 

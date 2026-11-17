@@ -464,6 +464,12 @@ WHERE archive.state IN ('archive_queued','restore_queued','delete_queued')
   AND COALESCE(task.system_kind,'')=''
 ORDER BY archive.requested_at,archive.id FOR UPDATE OF archive SKIP LOCKED LIMIT 1`).Scan(&id, &queuedState)
 	if errors.Is(err, sql.ErrNoRows) {
+		// The system-task quarantine above is a deliberate state transition, even
+		// when there is no ordinary job for this worker to claim. Commit it before
+		// returning the externally visible empty-queue result.
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	if err != nil {
