@@ -8,15 +8,18 @@ The supported topology is deliberately private:
 
 ```text
 ARTEX container
-  -> http://host.docker.internal:8645/v1
+  -> verified private Docker bridge route on :8645
   -> Hermes Subscription Proxy on this same host
   -> Hermes-owned authenticated subscription
 ```
 
 `docker-compose.yml` supplies `host.docker.internal:host-gateway` to the ARTEX
-container. It does **not** publish port 8645. Keep the Hermes proxy bound to
-the Docker bridge address or loopback only; never bind it to `0.0.0.0`, a
-WireGuard address, or a public interface.
+container. It does **not** publish port 8645. That alias is only a candidate,
+not proof of isolation: on a multi-bridge Docker host it can resolve to the
+default bridge instead of ARTEX's project bridge. Hermes' proxy has no separate
+inbound authentication, so a bad bind can expose a subscription-backed route to
+other local containers. Never bind it to `0.0.0.0`, a WireGuard address, or a
+public interface.
 
 ## Preconditions
 
@@ -31,20 +34,34 @@ WireGuard address, or a public interface.
 Do not run the Hermes login as root just to reach ARTEX. The login must remain
 with the ordinary user that will operate Hermes.
 
-## 1. Determine the private host address visible to the container
+## 1. Run the read-only bridge preflight
 
-From the ARTEX project directory, inspect the Compose-provided host alias:
+From the ARTEX project directory, run:
 
 ```bash
-docker compose exec artex getent ahostsv4 host.docker.internal
+scripts/preflight-hermes-subscription-proxy.sh
 ```
 
-Use the first returned IPv4 address only as the local proxy bind address. It is
-normally the current Docker bridge gateway. Do not hard-code a historical value
-such as `172.18.0.1`: Docker projects and hosts can use different networks.
+The helper is intentionally read-only. It does not start Hermes, read a Hermes
+login, change Docker or firewall state, make a provider request, create an
+ARTEX profile, or call a model. It checks the ARTEX network/gateway, resolves
+`host.docker.internal` from the container, counts containers from another
+Compose project on either relevant bridge, and checks whether TCP port 8645 is
+already in use.
 
-If the command cannot resolve the alias, stop here and inspect the active
-Compose configuration. Do not replace it with a public or WireGuard address.
+If it exits `2` or prints `result=BLOCKED`, stop. In particular, do not treat
+the current alias as safe when it resolves to a bridge shared by unrelated
+containers. Correct the Docker alias or bridge mapping itself, then re-run the
+preflight; an allow-only firewall policy is an additional later requirement,
+not a replacement for a passing alias check. Do not substitute a WireGuard or
+public address.
+
+An exit status of `0` prints `result=TOPOLOGY_REVIEW_REQUIRED`; it means only
+that this static check found no condition it knows how to reject. It does not
+authorize a proxy start, an external model request, a task, or agent execution.
+Before continuing, review the listener/firewall policy so only the intended
+ARTEX project can reach the selected host address. Copy its
+`suggested_profile_base_url` only after that review.
 
 ## 2. Start the Hermes proxy locally
 
@@ -52,7 +69,7 @@ Use the Subscription Proxy command supported by the installed Hermes CLI. The
 current Hermes documentation describes a command in this shape:
 
 ```bash
-hermes proxy start --host <docker-bridge-address> --port 8645
+hermes proxy start --provider nous --host <verified-private-bridge-address> --port 8645
 ```
 
 Before starting it, verify the flags for the installed version:
@@ -68,7 +85,7 @@ In a second terminal, verify only the local OpenAI-compatible surface from the
 ARTEX container:
 
 ```bash
-docker compose exec artex curl -fsS http://host.docker.internal:8645/v1/models
+docker compose exec artex curl -fsS http://<verified-private-bridge-address>:8645/v1/models
 ```
 
 This is a local connectivity check. A successful response proves neither a
@@ -82,7 +99,7 @@ In **System → LLM Profiles**, create a profile with these values:
 | Field | Value |
 | --- | --- |
 | Format | `Hermes Subscription Proxy (local, OAuth held by Hermes)` |
-| Base URL | `http://host.docker.internal:8645/v1` |
+| Base URL | The exact private `/v1` URL from the non-blocked preflight, after firewall review |
 | Model | Select an exact ID returned by **Load models** |
 | API Key | Leave empty — ARTEX ignores and clears it for this format |
 | ARTEX LLM proxy | Leave empty — Hermes is direct-only and rejects it |
@@ -97,7 +114,7 @@ public hostname, an HTTPS URL, a query string, URL credentials, or a path other
 than the OpenAI-compatible `/v1` root.
 
 Use this explicit format, not a generic `OpenAI` profile pointed at the
-documented `host.docker.internal:8645/v1` route. ARTEX rejects that known
+verified local `/v1` route. ARTEX rejects that known
 misconfiguration before it can fall back to a saved or environment API key. The
 entire local port `8645` is reserved for this Hermes integration; changing the
 path, query string, or URL fragment does not make it a generic-provider route.

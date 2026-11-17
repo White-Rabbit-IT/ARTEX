@@ -66,7 +66,7 @@ const MAX_TOKENS_FIELD_HINTS: Record<string, string> = {
 // state itself; ARTEX must never receive an OAuth token in this form.
 type ProfileFormat = "anthropic" | "openai" | "openai-responses" | "ollama" | "hermes-subscription";
 const OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
-const HERMES_SUBSCRIPTION_BASE_URL_EXAMPLE = "http://host.docker.internal:8645/v1";
+const HERMES_SUBSCRIPTION_BASE_URL_PLACEHOLDER = "Run host preflight; copy its candidate URL";
 const isKeylessFormat = (format: string) => format === "ollama" || format === "hermes-subscription";
 
 function profileModelPlaceholder(format: ProfileFormat) {
@@ -85,7 +85,7 @@ function profileBaseURLPlaceholder(format: ProfileFormat) {
     case "ollama":
       return OLLAMA_DEFAULT_BASE_URL;
     case "hermes-subscription":
-      return HERMES_SUBSCRIPTION_BASE_URL_EXAMPLE;
+      return HERMES_SUBSCRIPTION_BASE_URL_PLACEHOLDER;
     default:
       return "https://api.openai.com/v1";
   }
@@ -667,11 +667,13 @@ function ProfileSheet({
             />
             {format === "hermes-subscription" && (
               <p className="text-muted-foreground text-xs">
-                Use the private Docker-to-host bridge only, for example{" "}
-                <code>{HERMES_SUBSCRIPTION_BASE_URL_EXAMPLE}</code>. ARTEX rejects public endpoints for this profile.
-                First run <code>hermes portal</code> and start the local Subscription Proxy; do not paste an OAuth token
-                here. The profile test is a fixed synthetic calibration. Task and chat agents stay disabled for Hermes
-                by default and require the separate server-side execution opt-in.
+                Run <code>scripts/preflight-hermes-subscription-proxy.sh</code> on the host, then copy its candidate
+                private bridge URL here after a separate firewall review. Do not assume a Docker host alias is isolated:
+                a Hermes proxy has no inbound auth and must not be reachable by unrelated containers. ARTEX rejects
+                public endpoints for this profile. Use the installed Hermes CLI&apos;s normal portal login and start its
+                local Subscription Proxy; do not paste an OAuth token here. The profile test is a fixed synthetic
+                calibration. Task and chat agents stay disabled for Hermes by default and require the separate
+                server-side execution opt-in.
               </p>
             )}
           </div>
