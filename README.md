@@ -349,6 +349,16 @@ For a separate, metadata-only ARTEX activity feed in a Hermes bot channel, see
 under its documented trusted-producer boundary, the host-side sender uses the ordinary Hermes CLI
 login and forwards no raw task content, captures, headers, or credentials to the channel.
 
+### Safe UI calibration (CAL-00)
+
+Before admitting a real engagement, use **Tasks → Safe UI calibration**. It creates one fixed,
+completed CAL-00 provenance record so the task list and exploration graph can be checked without
+configuring an LLM or launching an agent. CAL-00 has no target, scope, credential, provider call,
+tool run, traffic capture, approval, or finding; it is a tooling result, not a security assessment.
+It is a persisted read-only system record: it can be inspected but cannot be edited, archived,
+deleted, chatted with, or admitted to an agent. The action is authenticated and idempotent. See [the CAL-00 guide](guides/synthetic-calibration.md)
+for the precise UI evidence and limitations.
+
 ### Option 2: Docker Compose (manual)
 
 ```bash

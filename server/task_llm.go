@@ -719,7 +719,7 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 // the task chain, then global. An exhausted chain is a hard stop for unbound
 // roles rather than a silent fall through to global — same as current().
 func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
-	if t == nil || len(agentKeys) == 0 {
+	if t == nil || t.IsSyntheticCalibration() || len(agentKeys) == 0 {
 		return false
 	}
 	state := t.llmStateSnapshot()

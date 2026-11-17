@@ -202,6 +202,14 @@ func (s *Server) updateTasksCategoryBatch(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("task_ids count must be 1-%d", db.MaxTaskCategoryBatchSize))
 		return
 	}
+	for _, parsed := range taskIDs {
+		if !parsed.valid {
+			continue
+		}
+		if task, ok := s.m.Task(parsed.id); ok && !s.requireMutableTask(w, task) {
+			return
+		}
+	}
 	items := make([]batchCategoryItem, 0, len(taskIDs))
 	pending := make([]string, 0, len(taskIDs))
 	for _, parsed := range taskIDs {

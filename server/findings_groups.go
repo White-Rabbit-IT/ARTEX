@@ -137,6 +137,9 @@ func (s *Server) deepenFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "finding origin task is no longer available")
 		return
 	}
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	if !s.engine.beginTaskOperation(t.ID) {
 		writeErr(w, 409, "task is being deleted")
 		return

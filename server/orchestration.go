@@ -150,6 +150,17 @@ func wrTool(name, desc string, schema map[string]any, run func(context.Context, 
 // that task's store, strips task_id, and calls the chosen per-task tool — so the
 // cross-task read reuses the exact in-task logic against another task.
 func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick func(*agent.ToolSet) actool.CoreTool) (actool.Result, error) {
+	return s.delegateToTaskKind(ctx, in, false, pick)
+}
+
+// delegateToMutableTask is the write counterpart of delegateToTask. CAL-00 is
+// deliberately readable through cross-task tools, but no cross-task write may
+// add graph data to its fixed receipt.
+func (s *Server) delegateToMutableTask(ctx context.Context, in json.RawMessage, pick func(*agent.ToolSet) actool.CoreTool) (actool.Result, error) {
+	return s.delegateToTaskKind(ctx, in, true, pick)
+}
+
+func (s *Server) delegateToTaskKind(ctx context.Context, in json.RawMessage, requireMutable bool, pick func(*agent.ToolSet) actool.CoreTool) (actool.Result, error) {
 	var head struct {
 		TaskID string `json:"task_id"`
 	}
@@ -160,6 +171,9 @@ func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick fu
 	t, ok := s.m.Task(head.TaskID)
 	if !ok {
 		return actool.Errorf("task not found: " + head.TaskID), nil
+	}
+	if requireMutable && t.IsSyntheticCalibration() {
+		return actool.Errorf(syntheticCalibrationImmutableMessage), nil
 	}
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(in, &m)
@@ -286,8 +300,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				if err != nil || id <= 0 || seenSources[id] {
 					return actool.Errorf("invalid or duplicate source task id"), nil
 				}
-				if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
+				source, ok := s.m.Task(strconv.FormatInt(id, 10))
+				if !ok {
 					return actool.Errorf(fmt.Sprintf("source task #%d not found", id)), nil
+				}
+				if source.IsSyntheticCalibration() {
+					return actool.Errorf(syntheticCalibrationImmutableMessage), nil
 				}
 				seenSources[id] = true
 				sourceIDs = append(sourceIDs, id)
@@ -405,7 +423,7 @@ func (s *Server) toolAddHint() actool.CoreTool {
 			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "anchored asset ids (optional, 0/1/many; asset ids within that task)"},
 		}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			return s.delegateToTask(ctx, in, (*agent.ToolSet).AddHintTool)
+			return s.delegateToMutableTask(ctx, in, (*agent.ToolSet).AddHintTool)
 		})
 }
 

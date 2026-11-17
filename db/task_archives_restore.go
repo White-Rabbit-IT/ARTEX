@@ -41,11 +41,14 @@ func (d *DB) CompleteTaskArchive(
 		return err
 	}
 	var taskID, expID int64
-	var state string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
+	var state, systemKind string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
 		return err
+	}
+	if systemKind != "" {
+		return fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
 	}
 	if state != Archiving || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return fmt.Errorf("%w: archive snapshot identity/state mismatch", ErrTaskArchiveState)
@@ -185,11 +188,14 @@ func (d *DB) restoreTaskArchive(
 		return nil, err
 	}
 	var taskID, expID int64
-	var state string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
+	var state, systemKind string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
 		return nil, err
+	}
+	if systemKind != "" {
+		return nil, fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
 	}
 	if state != Restoring || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return nil, fmt.Errorf("%w: restore snapshot identity/state mismatch", ErrTaskArchiveState)
@@ -757,11 +763,14 @@ func (d *DB) DeleteTaskArchiveStub(archiveID int64) error {
 		return err
 	}
 	var taskID, expID int64
-	var state string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
+	var state, systemKind string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
 		return err
+	}
+	if systemKind != "" {
+		return fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
 	}
 	if state != Deleting {
 		return ErrTaskArchiveState

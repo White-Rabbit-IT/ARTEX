@@ -773,6 +773,12 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	// System fixtures (currently CAL-00) are display-only records. Keep this
+	// final guard at the engine boundary so a future route or internal caller
+	// cannot turn a fixed calibration receipt into planner/worker loops.
+	if t == nil || t.IsSyntheticCalibration() {
+		return
+	}
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {

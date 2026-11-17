@@ -64,6 +64,9 @@ type TaskDTO struct {
 	CoverageEnabled    bool               `json:"coverage_enabled"` // asset coverage feature switch (fixed at creation)
 	PlanQuietMode      bool               `json:"plan_quiet_mode"`  // planner quiet-mode switch (#86), editable mid-run
 	TargetGate         bool               `json:"target_gate"`      // approval gate for asset targets, opt-in, editable mid-run
+	// SystemTaskKind is non-empty only for ARTEX-owned fixed fixtures. The UI
+	// uses it to mark CAL-00 read-only; server guards remain authoritative.
+	SystemTaskKind string `json:"system_task_kind,omitempty"`
 }
 
 // FindingSeverityDTO is the per-severity finding count shown in the task list (critical/high/medium/low).
@@ -147,6 +150,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CoverageEnabled:    t.CoverageEnabled,
 		PlanQuietMode:      t.PlanQuietMode,
 		TargetGate:         t.targetGate.Load(),
+		SystemTaskKind:     t.systemKind,
 	}
 }
 

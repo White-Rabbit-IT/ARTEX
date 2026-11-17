@@ -326,6 +326,7 @@ export default function TasksPage() {
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
+  const [creatingSyntheticCalibration, setCreatingSyntheticCalibration] = React.useState(false);
 
   React.useEffect(() => {
     const raw = getLocalStorageValue(TASK_FILTER_PREFERENCE_KEY);
@@ -410,7 +411,10 @@ export default function TasksPage() {
   React.useEffect(() => {
     setSelectedIds((prev) => {
       if (prev.size === 0) return prev;
-      const live = new Set(tasks.map((t) => t.id));
+      // Product-owned fixtures such as CAL-00 are deliberately excluded from
+      // every bulk action. The server remains authoritative, but keeping them
+      // out of selection avoids presenting an action the record will reject.
+      const live = new Set(tasks.filter((t) => !t.system_task_kind).map((t) => t.id));
       const next = new Set([...prev].filter((id) => live.has(id)));
       return next.size === prev.size ? prev : next;
     });
@@ -425,7 +429,10 @@ export default function TasksPage() {
     });
   }, []);
 
-  const pageIds = React.useMemo(() => paginated.map((t) => t.id), [paginated]);
+  const pageIds = React.useMemo(
+    () => paginated.filter((t) => !t.system_task_kind).map((t) => t.id),
+    [paginated],
+  );
   const pageSelectedCount = React.useMemo(
     () => pageIds.filter((id) => selectedIds.has(id)).length,
     [pageIds, selectedIds],
@@ -495,6 +502,25 @@ export default function TasksPage() {
     loadCategories();
     load();
   }, [load, loadCategories]);
+
+  const createSyntheticCalibration = React.useCallback(async () => {
+    if (creatingSyntheticCalibration) return;
+    setCreatingSyntheticCalibration(true);
+    try {
+      const result = await api.createSyntheticCalibration();
+      toast.success(
+        result.already_present
+          ? `Safe UI calibration is already available as task #${result.task.id}`
+          : `Safe UI calibration created as task #${result.task.id}`,
+      );
+      refreshCategoriesAndTasks();
+    } catch (error) {
+      toast.error(`Safe UI calibration failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setCreatingSyntheticCalibration(false);
+    }
+  }, [creatingSyntheticCalibration, refreshCategoriesAndTasks]);
 
   const applyTaskCategoryMove = React.useCallback(
     (taskID: string, category: TaskCategory | null) => {
@@ -673,7 +699,10 @@ export default function TasksPage() {
     [load],
   );
 
-  const selectedTasks = React.useMemo(() => tasks.filter((task) => selectedIds.has(task.id)), [tasks, selectedIds]);
+  const selectedTasks = React.useMemo(
+    () => tasks.filter((task) => !task.system_task_kind && selectedIds.has(task.id)),
+    [tasks, selectedIds],
+  );
   const pausableTaskIDs = React.useMemo(
     () => selectedTasks.filter((task) => taskControlAction(task.status) === "pause").map((task) => task.id),
     [selectedTasks],
@@ -747,7 +776,7 @@ export default function TasksPage() {
   // The backend writes the whole batch's category changes in one transaction, so the only failures can be tasks deleted after being checked.
   const moveSelectedTasksCategory = React.useCallback(
     async (categoryID?: number) => {
-      const ids = [...selectedIds];
+      const ids = selectedTasks.map((task) => task.id);
       if (ids.length === 0 || movingCategory) return;
       if (ids.length > 100) {
         toast.error("You can change the category of at most 100 tasks at once");
@@ -777,7 +806,7 @@ export default function TasksPage() {
         setMovingCategory(false);
       }
     },
-    [movingCategory, refreshCategoriesAndTasks, selectedIds],
+    [movingCategory, refreshCategoriesAndTasks, selectedTasks],
   );
 
   return (
@@ -843,9 +872,9 @@ export default function TasksPage() {
               <span className="text-muted-foreground text-xs tabular-nums">
                 {filtered.length}/{tasks.length} tasks
               </span>
-              {selectedIds.size > 0 && (
+              {selectedTasks.length > 0 && (
                 <>
-                  <span className="text-xs tabular-nums">{selectedIds.size} selected</span>
+                  <span className="text-xs tabular-nums">{selectedTasks.length} selected</span>
                   <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                     Clear selection
                   </Button>
@@ -893,11 +922,11 @@ export default function TasksPage() {
                   )}
                   <MoveTasksCategoryDialog
                     categories={categories}
-                    count={selectedIds.size}
+                    count={selectedTasks.length}
                     moving={movingCategory}
                     onMove={moveSelectedTasksCategory}
                   />
-                  <BulkDeleteTasksDialog ids={[...selectedIds]} onDelete={deleteTasks} />
+                  <BulkDeleteTasksDialog ids={selectedTasks.map((task) => task.id)} onDelete={deleteTasks} />
                 </>
               )}
               <ConcurrencySettingsDialog />
@@ -906,6 +935,10 @@ export default function TasksPage() {
                 tasks={tasks}
                 onChanged={refreshCategoriesAndTasks}
                 onTaskMoved={applyTaskCategoryMove}
+              />
+              <SyntheticCalibrationDialog
+                creating={creatingSyntheticCalibration}
+                onCreate={createSyntheticCalibration}
               />
               <CreateTaskSheet
                 tasks={tasks}
@@ -1185,6 +1218,7 @@ const TaskRow = React.memo(function TaskRow({
       <TableCell>
         <Checkbox
           checked={selected}
+          disabled={Boolean(task.system_task_kind)}
           onCheckedChange={(checked) => onSelectedChange(task.id, checked === true)}
           aria-label={`Select task ${task.id}`}
         />
@@ -1194,7 +1228,13 @@ const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell className="font-medium">
         <div className="flex max-w-xs items-center gap-2">
-          <TaskNameEditor task={task} onRename={onRename} />
+          {task.system_task_kind ? (
+            <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-300" title="Fixed ARTEX system record; read-only and non-runnable">
+              CAL-00 · read-only
+            </span>
+          ) : (
+            <TaskNameEditor task={task} onRename={onRename} />
+          )}
           {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
           {taskIsPinned(task) && <PinIcon className="text-primary size-4 shrink-0" aria-label="Pinned" />}
         </div>
@@ -1290,10 +1330,14 @@ const TaskRow = React.memo(function TaskRow({
               <EyeIcon />
             </Link>
           </Button>
-          <TaskControlButton task={task} onControl={onControl} />
-          <TaskPinAction task={task} onTogglePinned={onTogglePinned} />
-          <TaskArchiveAction task={task} onArchive={onArchive} />
-          <DeleteTaskDialog task={task} onDelete={onDelete} />
+          {!task.system_task_kind && (
+            <>
+              <TaskControlButton task={task} onControl={onControl} />
+              <TaskPinAction task={task} onTogglePinned={onTogglePinned} />
+              <TaskArchiveAction task={task} onArchive={onArchive} />
+              <DeleteTaskDialog task={task} onDelete={onDelete} />
+            </>
+          )}
         </div>
       </TableCell>
     </TableRow>
@@ -1474,6 +1518,57 @@ function archiveBlockReason(task: Task): string {
     return `The task is directly inherited by unarchived task #${task.archive_blocked_by_task_id}; archive the dependent task first`;
   }
   return "";
+}
+
+// SyntheticCalibrationDialog creates a fixed terminal evidence fixture. It is
+// intentionally separate from the normal task form: it accepts no target,
+// prompt, credentials, provider, or tool configuration, and never starts an
+// agent. Its job is to make the UI/provenance path visible before an operator
+// admits an actual engagement.
+function SyntheticCalibrationDialog({
+  creating,
+  onCreate,
+}: {
+  creating: boolean;
+  onCreate: () => Promise<void>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => !creating && setOpen(next)}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={creating}>
+          {creating && <Spinner data-icon="inline-start" />}
+          Safe UI calibration
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Create the safe UI calibration?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This creates one fixed, completed CAL-00 provenance record. It does not configure or call an LLM, start an agent, use a shell or browser, access a target, capture traffic, or create a finding. The record is idempotent, so later clicks only open the same calibration result.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={creating}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={creating}
+            onClick={async (event) => {
+              event.preventDefault();
+              try {
+                await onCreate();
+                setOpen(false);
+              } catch {
+                // onCreate has already shown the actionable error toast.
+              }
+            }}
+          >
+            {creating && <Spinner data-icon="inline-start" />}
+            Create CAL-00
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
 
 function ArchiveConfirmDialog({

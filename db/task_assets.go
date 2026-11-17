@@ -279,6 +279,32 @@ func (s *AssetStore) AttachAssetsToTask(taskID int64, assetIDs []int64, sourceSu
 	if !taskExists {
 		return mutation, ErrTaskAssetTaskNotFound
 	}
+	// The CAL-00 fixture asset is deliberately visible for graph inspection, but
+	// that must not make it reusable as ordinary task context. Reject it before
+	// the UPDATE below can append another task id or create a second provenance
+	// link. Check both its reserved bundle and its system-owned association so a
+	// damaged row still fails closed.
+	var protected bool
+	if err := tx.QueryRow(`
+SELECT EXISTS(
+    SELECT 1
+    FROM assets asset
+    WHERE asset.id=ANY($1::bigint[])
+      AND (
+        asset.bundle_id=$2
+        OR EXISTS(
+            SELECT 1 FROM tasks task
+            WHERE task.id=ANY(asset.task_ids)
+              AND task.deleted_at IS NULL
+              AND task.system_kind=$3
+        )
+      )
+)`, assetIDs, syntheticCalibrationBundleID, SyntheticCalibrationSystemKind).Scan(&protected); err != nil {
+		return mutation, err
+	}
+	if protected {
+		return mutation, ErrSyntheticCalibrationAssetImmutable
+	}
 	var found, existing int
 	if err := tx.QueryRow(`
 SELECT count(*), count(*) FILTER (WHERE $1=ANY(task_ids))

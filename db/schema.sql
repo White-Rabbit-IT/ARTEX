@@ -542,6 +542,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     plan_quiet_mode BOOLEAN NOT NULL DEFAULT true,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
+    -- System-owned records are not normal engagements. The empty default keeps
+    -- existing and user-created tasks on the ordinary lifecycle; named kinds
+    -- are reserved for fixed product fixtures such as CAL-00.
+    system_kind   TEXT NOT NULL DEFAULT '' CONSTRAINT ck_tasks_system_kind CHECK (system_kind IN ('', 'synthetic_calibration')),
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -568,6 +572,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 -- and open add_task_scope/list_untested_assets to the agent; false=all off (see task_scope.go).
 -- Existing tasks default to true to keep prior behavior; company associations (task_scope kind=company) are unaffected by this switch.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+-- Persistent system-task discriminator. The accompanying named CHECK arrives
+-- through migration 0006 for existing databases; schema.sql itself remains
+-- idempotent because it runs at every startup.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS system_kind TEXT NOT NULL DEFAULT '';
 -- queued_at makes admission FIFO reflect the actual enqueue order rather than the
 -- task creation order. queue_mode distinguishes first bootstrap from resuming an
 -- exploration that already owns goals/history.

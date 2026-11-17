@@ -12,6 +12,8 @@ const maxTaskAssetRequestBytes = 512 << 10
 
 func writeTaskAssetError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, db.ErrSyntheticCalibrationAssetImmutable):
+		writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 	case errors.Is(err, db.ErrTaskAssetInvalid):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, db.ErrTaskAssetTaskNotFound), errors.Is(err, db.ErrTaskAssetAssetNotFound):

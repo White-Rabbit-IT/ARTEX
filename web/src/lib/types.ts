@@ -40,6 +40,9 @@ export interface Task {
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // asset coverage feature switch (fixed at creation, on by default); false = do not compute/show coverage
+  // Non-empty for ARTEX-owned fixed records, such as CAL-00. Such records are
+  // inspectable but cannot be edited or executed.
+  system_task_kind?: "synthetic_calibration" | string;
 }
 
 export interface TaskCategory {

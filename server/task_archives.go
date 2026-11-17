@@ -93,15 +93,23 @@ func (s *Server) runOneTaskArchiveJob() error {
 		return err
 	}
 	var runErr error
-	switch job.State {
-	case pgdb.Archiving:
-		runErr = s.archiveTask(job)
-	case pgdb.Restoring:
-		runErr = s.restoreTaskArchive(job)
-	case pgdb.Deleting:
-		runErr = s.deleteTaskArchive(job)
-	default:
-		runErr = fmt.Errorf("unknown claimed archive state %q", job.State)
+	if system, systemErr := s.m.pg.IsSystemTaskArchive(job.ID); systemErr != nil {
+		runErr = systemErr
+	} else if system {
+		// ClaimTaskArchiveJob already quarantines system rows. Keep a worker-side
+		// backstop for a concurrent/manual database change between claim and run.
+		runErr = fmt.Errorf("%w: archive %d", pgdb.ErrSystemTaskImmutable, job.ID)
+	} else {
+		switch job.State {
+		case pgdb.Archiving:
+			runErr = s.archiveTask(job)
+		case pgdb.Restoring:
+			runErr = s.restoreTaskArchive(job)
+		case pgdb.Deleting:
+			runErr = s.deleteTaskArchive(job)
+		default:
+			runErr = fmt.Errorf("unknown claimed archive state %q", job.State)
+		}
 	}
 	if runErr != nil {
 		if failErr := s.m.pg.FailTaskArchiveJob(job.ID, job.State, runErr); failErr != nil {
@@ -115,6 +123,20 @@ func (s *Server) runOneTaskArchiveJob() error {
 }
 
 func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
+	// QueueTaskArchive refuses system fixtures, but keep the worker fail-closed
+	// for a stale/pre-feature queue row or a future internal caller. Resolve
+	// this before cancelling chat, draining workers, or creating archive files.
+	task, err := s.m.pg.GetTask(job.TaskID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return pgdb.ErrTaskArchiveNotFound
+	}
+	if task.IsSyntheticCalibration() {
+		return fmt.Errorf("%w: task %d", pgdb.ErrSystemTaskImmutable, job.TaskID)
+	}
+
 	taskID := strconv.FormatInt(job.TaskID, 10)
 	if !s.beginTaskDelete(taskID) {
 		return errors.New("task is already undergoing another archive or delete operation")
@@ -133,13 +155,6 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if err := s.drainTaskSideQuestions(drainCtx, taskID); err != nil {
 		return err
-	}
-	task, err := s.m.pg.GetTask(job.TaskID)
-	if err != nil {
-		return err
-	}
-	if task == nil {
-		return pgdb.ErrTaskArchiveNotFound
 	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "stage_files", 10)
 	fileStage, err := stageTaskArchiveFiles(s.m.dir, job.ID, taskID, task.ExplorationID)
@@ -239,6 +254,11 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 }
 
 func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
+	if system, err := s.m.pg.IsSystemTaskArchive(job.ID); err != nil {
+		return err
+	} else if system {
+		return fmt.Errorf("%w: archive %d", pgdb.ErrSystemTaskImmutable, job.ID)
+	}
 	if err := validateArchivePath(s.m.dir, job.ArchivePath); err != nil {
 		return err
 	}
@@ -393,6 +413,11 @@ func (s *Server) loadRestoredTask(taskID int64) {
 }
 
 func (s *Server) deleteTaskArchive(job *pgdb.TaskArchive) error {
+	if system, err := s.m.pg.IsSystemTaskArchive(job.ID); err != nil {
+		return err
+	} else if system {
+		return fmt.Errorf("%w: archive %d", pgdb.ErrSystemTaskImmutable, job.ID)
+	}
 	if err := validateArchivePath(s.m.dir, job.ArchivePath); err != nil {
 		return err
 	}
@@ -524,6 +549,15 @@ func (s *Server) queueTaskArchivesBatch(w http.ResponseWriter, r *http.Request) 
 	if len(parsed) > 100 {
 		writeErr(w, 400, "at most 100 tasks can be processed at once")
 		return
+	}
+	for _, item := range parsed {
+		if !item.valid {
+			continue
+		}
+		numeric, _ := strconv.ParseInt(item.id, 10, 64)
+		if !s.requireMutableTaskID(w, numeric) {
+			return
+		}
 	}
 	ids := make([]string, 0, len(parsed))
 	items := make([]archiveBatchItem, 0, len(parsed))
@@ -717,6 +751,9 @@ func writeArchiveError(w http.ResponseWriter, err error) {
 	status := http.StatusConflict
 	if errors.Is(err, pgdb.ErrTaskArchiveNotFound) {
 		status = http.StatusNotFound
+	} else if errors.Is(err, pgdb.ErrSystemTaskImmutable) {
+		writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+		return
 	} else if !errors.Is(err, pgdb.ErrTaskArchiveIneligible) &&
 		!errors.Is(err, pgdb.ErrTaskArchiveQueued) &&
 		!errors.Is(err, pgdb.ErrTaskArchiveDependent) &&

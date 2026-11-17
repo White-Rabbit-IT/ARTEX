@@ -626,6 +626,20 @@ func (s *Server) readTriggerBehavior(agentKey string) triggerBehavior {
 // merging by task / all / none); parallel → run each fire in its own concurrent
 // conversation up to trigger_max_parallel. Distinct agents always run concurrently.
 func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
+	// Scheduler events normally carry only a task id. Resolve the persistent
+	// system marker before a trigger can enter the chat-agent queue: CAL-00 is a
+	// UI fixture, never a reason to call a model/provider or start a global
+	// orchestration conversation.
+	if taskID > 0 {
+		isSynthetic, err := s.isSyntheticCalibrationTaskID(taskID)
+		if err != nil {
+			log.Printf("[trigger] resolve task %d system classification: %v", taskID, err)
+			return
+		}
+		if isSynthetic {
+			return
+		}
+	}
 	if s.m.pg == nil || s.chatAgentRef() == nil {
 		return
 	}

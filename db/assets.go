@@ -564,10 +564,16 @@ type UpsertAppReq struct {
 	ICP         string
 	CompanyID   *int64 // explicit override; nil = exact ICP auto-attribution when available
 	TaskID      int64
+	// allowSyntheticCalibrationFixture is deliberately unexported. Only the
+	// fixed CAL-00 constructor in this package can touch the reserved bundle.
+	allowSyntheticCalibrationFixture bool
 }
 
 // UpsertApp idempotently inserts or merges an app asset.
 func (s *AssetStore) UpsertApp(req UpsertAppReq) (int64, error) {
+	if IsSyntheticCalibrationFixtureBundleID(req.BundleID) && !req.allowSyntheticCalibrationFixture {
+		return 0, ErrSyntheticCalibrationAssetImmutable
+	}
 	if req.Name == "" {
 		return 0, fmt.Errorf("app name is required")
 	}
@@ -1438,6 +1444,26 @@ func (s *AssetStore) DeleteByIDs(ids []int64) (int64, error) {
 	for i, id := range ids {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		args[i] = id
+	}
+	// CAL-00's fixture asset is part of a fixed provenance receipt. Its asset
+	// ID is inspectable through ordinary read APIs, so this check belongs in the
+	// shared storage primitive rather than only in the UI route.
+	kindArg := len(args) + 1
+	protectedArgs := append(append([]any(nil), args...), SyntheticCalibrationSystemKind)
+	var protected bool
+	if err := s.db.QueryRow(`
+SELECT EXISTS(
+    SELECT 1
+    FROM assets asset
+    JOIN tasks task ON task.id = ANY(asset.task_ids)
+    WHERE asset.id IN (`+strings.Join(placeholders, ",")+`)
+      AND task.deleted_at IS NULL
+      AND task.system_kind = $`+fmt.Sprint(kindArg)+`
+)`, protectedArgs...).Scan(&protected); err != nil {
+		return 0, err
+	}
+	if protected {
+		return 0, ErrSyntheticCalibrationAssetImmutable
 	}
 	res, err := s.db.Exec("DELETE FROM assets WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
 	if err != nil {

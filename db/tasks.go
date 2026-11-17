@@ -62,6 +62,26 @@ type Task struct {
 	// situation view (the scope field is still kept). company associations (task_scope kind=company)
 	// are unrelated to this switch and never affected. See db/task_scope.go.
 	CoverageEnabled bool `json:"coverage_enabled"`
+	// SystemKind is empty for ordinary operator tasks. Non-empty kinds are
+	// product-owned records with stricter lifecycle rules; callers cannot set
+	// this through TaskCreateOptions.
+	SystemKind string `json:"system_kind,omitempty"`
+}
+
+// SyntheticCalibrationSystemKind is the persistent discriminator for the
+// fixed CAL-00 fixture. It is intentionally distinct from task text/graph
+// contents so guards still recognize the record after a restart.
+const SyntheticCalibrationSystemKind = "synthetic_calibration"
+
+// SystemTaskKindSyntheticCalibration is kept as a descriptive alias for code
+// that reads like a system-task dispatch.
+const SystemTaskKindSyntheticCalibration = SyntheticCalibrationSystemKind
+
+// IsSyntheticCalibration reports whether t is ARTEX's fixed CAL-00 system
+// fixture. The persistent database discriminator survives a process restart
+// and remains present even if a bug or manual data repair alters other fields.
+func (t *Task) IsSyntheticCalibration() bool {
+	return t != nil && t.SystemKind == SystemTaskKindSyntheticCalibration
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -111,6 +131,11 @@ const taskCompanyAssetSource = "company"
 var (
 	ErrTaskCompanyIDsInvalid = errors.New("invalid task company ids")
 	ErrTaskCompanyNotFound   = errors.New("task company not found")
+	// ErrSystemTaskImmutable is returned when an ordinary task operation tries
+	// to use an ARTEX-owned immutable record as a mutable dependency. This is
+	// checked in the DB transaction as well as in server admission code so a
+	// future caller cannot create a relation to CAL-00 by bypassing the UI.
+	ErrSystemTaskImmutable = errors.New("system task is fixed and cannot be modified or used as an inheritance source")
 )
 
 // NormalizeTaskCompanyIDs validates IDs and removes duplicates while retaining
@@ -350,12 +375,25 @@ func insertTaskRelations(tx *sql.Tx, taskID int64, sourceIDs []int64) error {
 			return fmt.Errorf("invalid or duplicate source task id %d", sourceID)
 		}
 		seen[sourceID] = true
+		// A source relation is a write against both tasks' provenance boundary.
+		// In particular, CAL-00's fixed receipt must never acquire a child that
+		// inherits from it. Keep this validation inside the creation transaction
+		// so callers outside the HTTP server cannot bypass it.
 		res, err := tx.Exec(`INSERT INTO task_relations(task_id, source_task_id)
-SELECT $1, id FROM tasks WHERE id=$2 AND deleted_at IS NULL`, taskID, sourceID)
+SELECT $1, id FROM tasks
+WHERE id=$2 AND deleted_at IS NULL AND COALESCE(system_kind,'')=''`, taskID, sourceID)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
+			var systemKind string
+			err := tx.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1 AND deleted_at IS NULL`, sourceID).Scan(&systemKind)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			if systemKind != "" {
+				return fmt.Errorf("%w: source task %d", ErrSystemTaskImmutable, sourceID)
+			}
 			return fmt.Errorf("source task %d not found", sourceID)
 		}
 	}
@@ -378,11 +416,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(llm_rotate,false), first_run_at, deadline_at, target_gate`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(system_kind,''), COALESCE(llm_rotate,false), first_run_at, deadline_at, target_gate`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt, &t.TargetGate); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.SystemKind, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt, &t.TargetGate); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil

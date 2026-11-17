@@ -411,6 +411,10 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 	// On a target request "allowed" pins the addresses the request displayed.
 	// Every human decision records who took it and from where.
 	if err := s.m.interceptor.Decide(id, req.Decision == "allowed", s.approver(r), clientIP(r, s.trustedProxies)); err != nil {
+		if errors.Is(err, db.ErrSystemTaskImmutable) {
+			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+			return
+		}
 		if errors.Is(err, intercept.ErrAlreadyDecided) {
 			writeErr(w, 409, err.Error())
 			return
@@ -512,6 +516,13 @@ func (s *Server) interceptAlwaysAllow(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Status != "pending" {
 		writeErr(w, 409, "the request is no longer pending")
+		return
+	}
+	if system, err := pg.IsSystemTaskInterceptPending(id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	} else if system {
+		writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 		return
 	}
 	prefix, err := intercept.AlwaysAllowPrefix(p.ToolName, p.ToolInput)

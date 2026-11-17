@@ -97,6 +97,9 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 	if t == nil {
 		return taskControlResult{}, fmt.Errorf("task not found")
 	}
+	if t.IsSyntheticCalibration() {
+		return taskControlResult{ID: t.ID}, ErrSystemTaskImmutable
+	}
 	out := taskControlResult{ID: t.ID}
 	switch action {
 	case "pause":
@@ -261,6 +264,14 @@ func (s *Server) controlTasksBatch(w http.ResponseWriter, r *http.Request) {
 	if len(taskIDs) == 0 || len(taskIDs) > maxBatchControlIDs {
 		writeErr(w, 400, fmt.Sprintf("task_ids count must be 1-%d", maxBatchControlIDs))
 		return
+	}
+	for _, parsed := range taskIDs {
+		if !parsed.valid {
+			continue
+		}
+		if task, ok := s.m.Task(parsed.id); ok && !s.requireMutableTask(w, task) {
+			return
+		}
 	}
 	items := make([]batchControlItem, 0, len(taskIDs))
 	for _, parsed := range taskIDs {

@@ -436,6 +436,10 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := as.DeleteByIDs(req.IDs)
 	if err != nil {
+		if errors.Is(err, db.ErrSyntheticCalibrationAssetImmutable) {
+			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -491,6 +495,15 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
+	}
+	if req.TaskID > 0 && !s.requireMutableTaskID(w, req.TaskID) {
+		return
+	}
+	for _, asset := range req.Assets {
+		if db.IsSyntheticCalibrationFixtureBundleID(asset.BundleID) {
+			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+			return
+		}
 	}
 
 	type result struct {

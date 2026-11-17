@@ -64,8 +64,12 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if taskScoped {
-		if s.m.ResolveTask(id) == nil {
+		task := s.m.ResolveTask(id)
+		if task == nil {
 			writeErr(w, 404, "task not found")
+			return
+		}
+		if !s.requireMutableTask(w, task) {
 			return
 		}
 		if !s.engine.beginTaskOperation(id) {

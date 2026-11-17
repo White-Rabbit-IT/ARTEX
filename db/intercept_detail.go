@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -152,7 +153,27 @@ func (d *DB) ResolveInterceptBy(id int64, status, action, reason, decidedBy, app
 	if err != nil {
 		return false, err
 	}
-	r, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW(), decided_by=$5,
+	tx, err := d.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var systemKind string
+	err = tx.QueryRow(`SELECT COALESCE(task.system_kind,'')
+FROM intercept_pending pending
+LEFT JOIN tasks task ON task.id::text=pending.task_id
+WHERE pending.id=$1 AND pending.status='pending'
+FOR UPDATE OF pending`, id).Scan(&systemKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if systemKind != "" {
+		return false, fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
+	}
+	r, err := tx.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW(), decided_by=$5,
 		audit=CASE WHEN audit IS NULL THEN NULL ELSE audit || $3::jsonb ||
         CASE WHEN $4='allow' AND audit->>'correlation' IS DISTINCT FROM 'exact'
         THEN '{"execution_status":"unknown"}'::jsonb ELSE '{}'::jsonb END END
@@ -161,12 +182,38 @@ func (d *DB) ResolveInterceptBy(id int64, status, action, reason, decidedBy, app
 		return false, err
 	}
 	n, err := r.RowsAffected()
-	return n == 1, err
+	if err != nil || n != 1 {
+		return n == 1, err
+	}
+	return true, tx.Commit()
+}
+
+// IsSystemTaskInterceptPending reports whether an approval row belongs to a
+// product-owned system task. It intentionally joins by task_id text because
+// intercept_pending predates the task foreign-key model and retains legacy
+// records. The result is safe for global approval endpoints whose route carries
+// only the pending-row id.
+func (d *DB) IsSystemTaskInterceptPending(id int64) (bool, error) {
+	var systemKind string
+	err := d.QueryRow(`SELECT COALESCE(task.system_kind,'')
+FROM intercept_pending pending
+LEFT JOIN tasks task ON task.id::text=pending.task_id
+WHERE pending.id=$1`, id).Scan(&systemKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return systemKind != "", nil
 }
 
 // CompleteIntercept only updates the exact recorded call after it was allowed.
 // A blocked tool_result must never be presented as a failed execution.
 func (d *DB) CompleteIntercept(id int64, runID, toolUseID, status, output string, truncated bool) error {
+	if err := d.requireMutableInterceptPending(id); err != nil {
+		return err
+	}
 	patch, err := json.Marshal(map[string]any{
 		"execution_status": status, "output": output, "output_truncated": truncated,
 		"execution_ended_at": time.Now().UTC(),

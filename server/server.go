@@ -305,6 +305,12 @@ func (s *Server) restoreTaskRuntimes() {
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
 	for _, t := range m.LoadExisting() {
+		// CAL-00 is a fixed completed receipt, not a recoverable execution
+		// runtime. Skip even benign recovery rewrites so a tampered/partial
+		// record fails closed rather than being silently altered on startup.
+		if t.IsSyntheticCalibration() {
+			continue
+		}
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
@@ -752,6 +758,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
+	// CAL-00 is intentionally distinct from normal task admission: it creates
+	// one terminal, non-runnable UI/provenance fixture and never launches work.
+	mux.HandleFunc("POST /api/calibration/synthetic", s.createSyntheticCalibration)
 	mux.HandleFunc("GET /api/skill-gaps", s.skillGaps)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
@@ -1042,7 +1051,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux))
+	api := cors(s.requireAuth(s.systemTaskMutationGuard(mux)))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -1755,8 +1764,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "invalid or duplicate source task id")
 			return
 		}
-		if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
+		source, ok := s.m.Task(strconv.FormatInt(id, 10))
+		if !ok {
 			writeErr(w, 400, fmt.Sprintf("source task #%d not found", id))
+			return
+		}
+		if source.IsSyntheticCalibration() {
+			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 			return
 		}
 		seenSources[id] = true
@@ -1783,6 +1797,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		TargetGate:      req.TargetGate,
 	})
 	if err != nil {
+		if errors.Is(err, ErrSystemTaskImmutable) || errors.Is(err, db.ErrSystemTaskImmutable) {
+			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+			return
+		}
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
 			writeErr(w, 400, "task category not found or invalid")
 			return
@@ -4094,6 +4112,9 @@ func (s *Server) newMainSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	if s.engine.IsDeleting(t.ID) {
 		writeErr(w, 409, "task is being deleted; cannot create a new session")
 		return
@@ -4110,6 +4131,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
+		return
+	}
+	if !s.requireMutableTask(w, t) {
 		return
 	}
 	if s.engine.IsDeleting(t.ID) {

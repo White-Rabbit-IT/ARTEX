@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	pgdb "github.com/Autumn-27/artex/db"
@@ -204,6 +206,103 @@ func TestTaskArchiveRestoreJournalRollsBackInterruptedInstall(t *testing.T) {
 	if got, err := os.ReadFile(source); err != nil || string(got) != "evidence" {
 		t.Fatalf("restore source=%q err=%v", got, err)
 	}
+}
+
+func TestArchiveRecoveryRefusesSyntheticCalibrationJournals(t *testing.T) {
+	g := newGateServer(t)
+	cal, _, err := g.m.EnsureSyntheticCalibrationTask()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, err := strconv.ParseInt(cal.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := g.m.pg.DeleteTaskCascade(taskID, true, true, true); err != nil {
+			t.Errorf("cleanup CAL-00: %v", err)
+		}
+		g.m.forgetTask(cal.ID, taskID)
+	})
+
+	dataDir := t.TempDir()
+	archivePath := taskArchivePath(dataDir, 71, cal.ID)
+	var archiveID int64
+	if err := g.m.pg.QueryRow(`INSERT INTO task_archives(task_id,state,phase,archive_path,task_name,task_description,task_goal,original_status)
+VALUES($1,'ready','ready',$2,'CAL-00','synthetic fixture','fixed receipt','done') RETURNING id`, taskID, archivePath).Scan(&archiveID); err != nil {
+		t.Fatal(err)
+	}
+	if archiveID <= 0 {
+		t.Fatal("stale CAL-00 archive id was not assigned")
+	}
+
+	t.Run("archive staging", func(t *testing.T) {
+		root := filepath.Join(taskArchiveRoot(dataDir), ".staging", "cal-archive")
+		if err := os.MkdirAll(root, archiveDirMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "sentinel"), []byte("leave for review"), archiveFileMode); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(archiveStageJournal{ArchiveID: archiveID, TaskID: cal.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "journal.json"), raw, archiveFileMode); err != nil {
+			t.Fatal(err)
+		}
+		err = recoverTaskArchiveStages(dataDir, g.m.pg)
+		if !errors.Is(err, pgdb.ErrSystemTaskImmutable) {
+			t.Fatalf("archive recovery err=%v, want ErrSystemTaskImmutable", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "sentinel")); err != nil {
+			t.Fatalf("archive recovery changed synthetic staging: %v", err)
+		}
+	})
+
+	t.Run("restore staging", func(t *testing.T) {
+		root := filepath.Join(taskArchiveRoot(dataDir), ".restore", "cal-restore")
+		if err := os.MkdirAll(root, archiveDirMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "sentinel"), []byte("leave for review"), archiveFileMode); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(archiveRestoreJournal{ArchiveID: archiveID, TaskID: taskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "restore-journal.json"), raw, archiveFileMode); err != nil {
+			t.Fatal(err)
+		}
+		err = recoverTaskArchiveRestoreStages(dataDir, g.m.pg)
+		if !errors.Is(err, pgdb.ErrSystemTaskImmutable) {
+			t.Fatalf("restore recovery err=%v, want ErrSystemTaskImmutable", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "sentinel")); err != nil {
+			t.Fatalf("restore recovery changed synthetic staging: %v", err)
+		}
+	})
+
+	t.Run("delete package", func(t *testing.T) {
+		staged := archivePath + ".deleting-" + strconv.FormatInt(archiveID, 10)
+		if err := os.MkdirAll(filepath.Dir(staged), archiveDirMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(staged, []byte("leave for review"), archiveFileMode); err != nil {
+			t.Fatal(err)
+		}
+		err = recoverTaskArchiveDeletePackages(dataDir, g.m.pg)
+		if !errors.Is(err, pgdb.ErrSystemTaskImmutable) {
+			t.Fatalf("delete recovery err=%v, want ErrSystemTaskImmutable", err)
+		}
+		if _, err := os.Stat(staged); err != nil {
+			t.Fatalf("delete recovery changed synthetic package: %v", err)
+		}
+		if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+			t.Fatalf("delete recovery restored or created archive path: %v", err)
+		}
+	})
 }
 
 func TestTaskArchiveDeletePackageCanResumeFromStagedPath(t *testing.T) {

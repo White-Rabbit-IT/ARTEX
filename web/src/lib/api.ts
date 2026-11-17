@@ -298,6 +298,16 @@ export const api = {
       intercept_rules: input.interceptRules ?? [], // task-level asset interception rules
       credentials: input.credentials ?? [], // test accounts declared at creation; an empty password = the agent generates and records it (#3)
     }),
+  // Creates ARTEX's fixed CAL-00 evidence/UI fixture. The endpoint accepts no
+  // user-authored task material and is terminal/non-runnable by design.
+  createSyntheticCalibration: () =>
+    post<{
+      kind: "synthetic_calibration";
+      runnable: false;
+      provider_called: false;
+      already_present: boolean;
+      task: Task;
+    }>("/calibration/synthetic"),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),

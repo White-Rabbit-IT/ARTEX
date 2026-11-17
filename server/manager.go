@@ -64,18 +64,22 @@ type Task struct {
 	CompanyIDs        []int64 `json:"company_ids,omitempty"`
 	Status            string  `json:"status"` // persisted lifecycle status (done/failed/timeout are terminal; empty/other is derived from runtime state)
 	// Task-level timeout (see docs/task-timeout-and-settle-design.md). DeadlineAt/FirstRunAt are unix seconds, 0 = unset/not yet run.
-	TimeoutSeconds       int                    `json:"timeout_seconds"`
-	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // planner heartbeat trigger interval (seconds)
-	PlanQuietMode        bool                   `json:"plan_quiet_mode"`        // planner quiet-mode switch (#86), editable mid-run
-	CoverageEnabled      bool                   `json:"coverage_enabled"`       // asset coverage feature switch (fixed at creation, on by default)
-	FirstRunAt           int64                  `json:"first_run_at,omitempty"`
-	DeadlineAt           int64                  `json:"deadline_at,omitempty"`
-	Store                *pgdb.ExplorationStore `json:"-"`
-	Guard                *guard.Guard           `json:"-"`
-	TargetGuard          *guard.Guard           `json:"-"` // planner and main-agent hooks: target gate only
-	notify               chan struct{}
-	lifecycleMu          sync.RWMutex
-	llmMu                sync.RWMutex
+	TimeoutSeconds       int  `json:"timeout_seconds"`
+	PlanHeartbeatSeconds int  `json:"plan_heartbeat_seconds"` // planner heartbeat trigger interval (seconds)
+	PlanQuietMode        bool `json:"plan_quiet_mode"`        // planner quiet-mode switch (#86), editable mid-run
+	CoverageEnabled      bool `json:"coverage_enabled"`       // asset coverage feature switch (fixed at creation, on by default)
+	// systemKind is a server-internal classification for records ARTEX owns as
+	// fixed product fixtures rather than operator-created engagements. It must
+	// never be writable through an API payload.
+	systemKind  string
+	FirstRunAt  int64                  `json:"first_run_at,omitempty"`
+	DeadlineAt  int64                  `json:"deadline_at,omitempty"`
+	Store       *pgdb.ExplorationStore `json:"-"`
+	Guard       *guard.Guard           `json:"-"`
+	TargetGuard *guard.Guard           `json:"-"` // planner and main-agent hooks: target gate only
+	notify      chan struct{}
+	lifecycleMu sync.RWMutex
+	llmMu       sync.RWMutex
 	// targetGate is the task's opt-in to the approval gate for asset targets.
 	// Atomic: it is switched through the API while tool calls read it.
 	targetGate  atomic.Bool
@@ -86,6 +90,12 @@ type Task struct {
 	// a burst into one round, so several may pile up before drainTriggers() clears them.
 	trigMu          sync.Mutex
 	pendingTriggers []agent.TriggerEvent
+}
+
+// IsSyntheticCalibration reports whether this task is ARTEX's fixed CAL-00
+// system fixture. Such a task is viewable but neither mutable nor executable.
+func (t *Task) IsSyntheticCalibration() bool {
+	return t != nil && t.systemKind == pgdb.SyntheticCalibrationSystemKind
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task
@@ -904,6 +914,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		PlanQuietMode:   pt.PlanQuietMode,
 		CoverageEnabled: pt.CoverageEnabled,
+		systemKind:      pt.SystemKind,
 		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic), TargetGuard: guard.NewTargetOnly(ic), notify: make(chan struct{}, 1),
 		interceptor: ic,
@@ -951,6 +962,9 @@ func (m *Manager) targetGateEndpoints() []string {
 func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task, error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(taskID); err != nil {
+		return nil, err
+	}
 	id, err := strconv.ParseInt(taskID, 10, 64)
 	if err != nil || id <= 0 {
 		return nil, nil
@@ -989,6 +1003,14 @@ func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, time
 }
 
 func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.TaskCreateOptions) (*Task, error) {
+	// A fixed ARTEX system record is inspectable but is never reusable as an
+	// inheritance source. Reject it before creating a new child exploration;
+	// db.insertTaskRelations repeats the check transactionally for cold callers.
+	for _, sourceID := range opts.SourceTaskIDs {
+		if source, found := m.Task(strconv.FormatInt(sourceID, 10)); found && source.IsSyntheticCalibration() {
+			return nil, ErrSystemTaskImmutable
+		}
+	}
 	if len(opts.CompanyIDs) > 0 {
 		m.companyMu.Lock()
 		defer m.companyMu.Unlock()
@@ -1003,6 +1025,40 @@ func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.Task
 	m.active = t.ID
 	m.mu.Unlock()
 	return t, nil
+}
+
+// EnsureSyntheticCalibrationTask registers ARTEX's fixed CAL-00 UI/provenance
+// fixture without admitting work to the engine. Unlike CreateTaskWithOptions,
+// the database helper inserts a terminal task in its first committed state, so
+// neither this manager nor a later server restart can schedule it.
+//
+// The method deliberately does not replace the active task. A calibration
+// click must not make an operator's current task implicitly active; it becomes
+// active only when this is the first task the manager has seen.
+func (m *Manager) EnsureSyntheticCalibrationTask() (*Task, bool, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+
+	result, err := m.pg.EnsureSyntheticCalibrationTask()
+	if err != nil {
+		return nil, false, err
+	}
+	if result == nil || result.Task == nil {
+		return nil, false, errors.New("synthetic calibration database helper returned no task")
+	}
+
+	id := strconv.FormatInt(result.Task.ID, 10)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.tasks[id]; existing != nil {
+		return existing, result.AlreadyPresent, nil
+	}
+	t := taskFromPG(result.Task, m.pg.Exploration(result.Task.ExplorationID), m.interceptor)
+	m.tasks[t.ID] = t
+	if m.active == "" {
+		m.active = t.ID
+	}
+	return t, result.AlreadyPresent, nil
 }
 
 // RenameTaskCategory persists a category name and refreshes every live task DTO
@@ -1051,6 +1107,9 @@ func (m *Manager) DeleteTaskCategory(id int64) (bool, error) {
 func (m *Manager) SetTaskCategory(taskID string, categoryID *int64) (*pgdb.TaskCategory, error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(taskID); err != nil {
+		return nil, err
+	}
 	id, err := strconv.ParseInt(taskID, 10, 64)
 	if err != nil || id <= 0 {
 		return nil, pgdb.ErrTaskCategoryTaskNotFound
@@ -1083,6 +1142,9 @@ func (m *Manager) SetTasksCategory(taskIDs []string, categoryID *int64) (map[str
 	defer m.taskStateMu.Unlock()
 	numeric := make([]int64, 0, len(taskIDs))
 	for _, taskID := range taskIDs {
+		if err := m.requireMutableTask(taskID); err != nil {
+			return nil, nil, err
+		}
 		id, err := strconv.ParseInt(taskID, 10, 64)
 		if err != nil || id <= 0 {
 			return nil, nil, pgdb.ErrTaskCategoryTaskNotFound
@@ -1148,6 +1210,9 @@ func (m *Manager) DeleteCompanyWithAssets(id int64, deleteAssets bool) (int64, e
 // committed state onto the live task handle. Terminal tasks are editable too —
 // their main-agent conversation keeps running on the chain after the task finishes.
 func (m *Manager) ReplaceTaskLLMProfiles(id string, profileIDs []int64, activeProfileID int64, rotate ...*bool) (int64, error) {
+	if err := m.requireMutableTask(id); err != nil {
+		return 0, err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return 0, err
@@ -1221,6 +1286,9 @@ func (m *Manager) LoadExisting() []*Task {
 func (m *Manager) SetTaskPaused(id string, paused bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1249,6 +1317,9 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued bool, mode string, preservePosition bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1347,6 +1418,9 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 func (m *Manager) ApplyTaskPause(id string) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1380,6 +1454,9 @@ func (m *Manager) ApplyTaskPause(id string) error {
 func (m *Manager) EnqueueTask(id, mode string) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1421,6 +1498,9 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 func (m *Manager) DequeueTask(id string, clearMode bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1457,6 +1537,9 @@ func (m *Manager) TaskStatus(id string) string {
 func (m *Manager) StampTaskFirstRun(id string) (int64, error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return 0, err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return 0, err
@@ -1495,6 +1578,9 @@ func (m *Manager) StampTaskFirstRun(id string) (int64, error) {
 func (m *Manager) SetTaskStatusGuarded(id, status, endReason string) (won bool, err error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return false, err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return false, err
@@ -1522,6 +1608,9 @@ func (m *Manager) SetTaskStatusGuarded(id, status, endReason string) (won bool, 
 func (m *Manager) SetTaskStatus(id, status string) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
+	if err := m.requireMutableTask(id); err != nil {
+		return err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return err
@@ -1568,6 +1657,9 @@ func (m *Manager) extractLessons(taskID int64) {
 // database failure and purged only after its commit.
 func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResult, error) {
 	result := DeleteTaskResult{Deleted: id}
+	if err := m.requireMutableTask(id); err != nil {
+		return result, err
+	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return result, err
@@ -1579,6 +1671,9 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	if registered == nil {
 		m.forgetTask(id, n)
 		return result, nil
+	}
+	if registered.IsSyntheticCalibration() {
+		return result, ErrSystemTaskImmutable
 	}
 
 	var fileStage *taskFileDeleteStage
@@ -1817,6 +1912,31 @@ func (m *Manager) Task(id string) (*Task, bool) {
 	defer m.mu.RUnlock()
 	t, ok := m.tasks[id]
 	return t, ok
+}
+
+// requireMutableTask is the Manager-level backstop for callers that do not
+// arrive through the HTTP task-route guard. It resolves an unloaded row from
+// PostgreSQL as well, so the persistent system marker remains effective across
+// reloads and maintenance paths, not only while a task happens to be live.
+func (m *Manager) requireMutableTask(id string) error {
+	if task, ok := m.Task(id); ok {
+		if task.IsSyntheticCalibration() {
+			return ErrSystemTaskImmutable
+		}
+		return nil
+	}
+	numericID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || numericID <= 0 || m.pg == nil {
+		return nil
+	}
+	stored, err := m.pg.GetTask(numericID)
+	if err != nil {
+		return err
+	}
+	if stored != nil && stored.IsSyntheticCalibration() {
+		return ErrSystemTaskImmutable
+	}
+	return nil
 }
 
 // ActiveTask returns the currently active task (or nil).

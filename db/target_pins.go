@@ -146,6 +146,9 @@ func (d *DB) RevokeTargetPin(scope TargetScopeRef, pinID int64) (*TargetPin, err
 	if err := scope.check(); err != nil {
 		return nil, err
 	}
+	if err := d.requireMutableTargetScope(scope); err != nil {
+		return nil, err
+	}
 	if _, err := d.Exec(`UPDATE target_pins SET status='revoked', revoked_at=now(), revoked_reason=$4
 WHERE `+targetPinScope+` AND id=$3 AND status='active'`, scope.TaskID, scope.ConversationID, pinID, TargetPinRevokedByOperator); err != nil {
 		return nil, err
@@ -185,6 +188,29 @@ WHERE COALESCE(task_id,'')=$1 AND status='pending' AND target_key IS NOT NULL`, 
 	return err
 }
 
+// requireMutableTargetScope is the DB-side backstop for target-gate writers.
+// Route-level task guards do not cover internal callers, and target approvals
+// can be resumed by a stale global pending-row id after a restart.
+func (d *DB) requireMutableTargetScope(scope TargetScopeRef) error {
+	if scope.TaskID <= 0 {
+		return nil
+	}
+	var systemKind string
+	err := d.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1`, scope.TaskID).Scan(&systemKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Preserve the existing scope semantics for legacy/deleted rows; the
+		// actual writer will retain its own validity checks.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if systemKind != "" {
+		return fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, scope.TaskID)
+	}
+	return nil
+}
+
 // TargetRequest is a new target approval request: the intercept_pending row a
 // gated call asks for when one of its targets has no pin that covers it.
 type TargetRequest struct {
@@ -207,6 +233,9 @@ type TargetRequest struct {
 // that was open got decided in between: the caller goes back to the pin lookup.
 func (d *DB) FindOrCreateTargetRequest(r TargetRequest) (id int64, created bool, err error) {
 	if err := r.Scope.check(); err != nil {
+		return 0, false, err
+	}
+	if err := d.requireMutableTargetScope(r.Scope); err != nil {
 		return 0, false, err
 	}
 	raw := json.RawMessage(r.ToolInput)
@@ -273,13 +302,20 @@ func (d *DB) ResolveTargetRequest(id int64, allowed bool, approver, remoteAddr s
 	var taskID sql.NullString
 	var convID sql.NullInt64
 	var raw []byte
-	err = tx.QueryRow(`SELECT task_id, conversation_id, audit FROM intercept_pending
-WHERE id=$1 AND status='pending' AND target_key IS NOT NULL FOR UPDATE`, id).Scan(&taskID, &convID, &raw)
+	var systemKind string
+	err = tx.QueryRow(`SELECT pending.task_id, pending.conversation_id, pending.audit, COALESCE(task.system_kind,'')
+FROM intercept_pending pending
+LEFT JOIN tasks task ON task.id::text=pending.task_id
+WHERE pending.id=$1 AND pending.status='pending' AND pending.target_key IS NOT NULL
+FOR UPDATE OF pending`, id).Scan(&taskID, &convID, &raw, &systemKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if systemKind != "" {
+		return nil, false, fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
 	}
 	var audit InterceptAudit
 	if len(raw) > 0 {
@@ -418,6 +454,9 @@ type TargetDecision struct {
 // never pins.
 func (d *DB) LogTargetDecision(r TargetDecision) (int64, error) {
 	if err := r.Scope.check(); err != nil {
+		return 0, err
+	}
+	if err := d.requireMutableTargetScope(r.Scope); err != nil {
 		return 0, err
 	}
 	raw := json.RawMessage(r.ToolInput)

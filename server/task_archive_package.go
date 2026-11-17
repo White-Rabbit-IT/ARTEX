@@ -315,6 +315,34 @@ func (s *taskArchiveRestoreFiles) commit() error {
 	return os.RemoveAll(s.extracted)
 }
 
+// requireMutableArchiveRecoveryTarget prevents startup cleanup from touching a
+// product-owned system fixture merely because an old staging journal survived a
+// restart. A missing archive record is tolerated only when its journal task is
+// not a live system task; ordinary recovery retains its previous behavior for
+// already-consumed journals.
+func requireMutableArchiveRecoveryTarget(pg *pgdb.DB, archiveID, taskID int64) error {
+	system, err := pg.IsSystemTaskArchive(archiveID)
+	switch {
+	case err == nil:
+		if system {
+			return fmt.Errorf("%w: archive %d", pgdb.ErrSystemTaskImmutable, archiveID)
+		}
+		return nil
+	case !errors.Is(err, pgdb.ErrTaskArchiveNotFound):
+		return err
+	case taskID <= 0:
+		return nil
+	}
+	task, err := pg.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if task != nil && task.IsSyntheticCalibration() {
+		return fmt.Errorf("%w: task %d", pgdb.ErrSystemTaskImmutable, taskID)
+	}
+	return nil
+}
+
 // recoverTaskArchiveRestoreStages resolves file installs left by an interrupted
 // restore. If PostgreSQL committed, installed files are authoritative and only
 // the extraction directory is stale. Otherwise all completed renames are moved
@@ -348,6 +376,10 @@ func recoverTaskArchiveRestoreStages(dataDir string, pg *pgdb.DB) error {
 		}
 		var journal archiveRestoreJournal
 		if err := json.Unmarshal(raw, &journal); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := requireMutableArchiveRecoveryTarget(pg, journal.ArchiveID, journal.TaskID); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -423,6 +455,11 @@ func recoverTaskArchiveStages(dataDir string, pg *pgdb.DB) error {
 			errs = append(errs, err)
 			continue
 		}
+		journalTaskID, _ := strconv.ParseInt(journal.TaskID, 10, 64)
+		if err := requireMutableArchiveRecoveryTarget(pg, journal.ArchiveID, journalTaskID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		archive, getErr := pg.GetTaskArchive(journal.ArchiveID)
 		if getErr != nil {
 			errs = append(errs, getErr)
@@ -470,6 +507,10 @@ func recoverTaskArchiveDeletePackages(dataDir string, pg *pgdb.DB) error {
 		}
 		staged := filepath.Join(root, name)
 		original := filepath.Join(root, name[:marker])
+		if err := requireMutableArchiveRecoveryTarget(pg, archiveID, 0); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		archive, err := pg.GetTaskArchive(archiveID)
 		if err != nil {
 			errs = append(errs, err)

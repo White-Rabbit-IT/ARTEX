@@ -109,10 +109,46 @@ func (d *DB) ToggleInterceptRule(id int64, enabled bool) error {
 	return err
 }
 
+// requireMutableInterceptTask prevents generic intercept writers from adding
+// receipts to an ARTEX-owned system fixture. intercept_pending.task_id is a
+// legacy text field, so resolve it through the durable task id rather than
+// relying on a live Manager entry.
+func (d *DB) requireMutableInterceptTask(taskID string) error {
+	if taskID == "" {
+		return nil
+	}
+	var systemKind string
+	err := d.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id::text=$1`, taskID).Scan(&systemKind)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if systemKind != "" {
+		return fmt.Errorf("%w: task %s", ErrSystemTaskImmutable, taskID)
+	}
+	return nil
+}
+
+func (d *DB) requireMutableInterceptPending(id int64) error {
+	system, err := d.IsSystemTaskInterceptPending(id)
+	if err != nil {
+		return err
+	}
+	if system {
+		return fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
+	}
+	return nil
+}
+
 // CreateInterceptPending inserts a pending approval record and returns its ID.
 // convID == 0 → conversation_id stored as NULL (background task).
 // taskID == "" → task_id stored as NULL.
 func (d *DB) CreateInterceptPending(ruleID, convID int64, taskID, agentName, toolName string, input []byte, reason string, audits ...*InterceptAudit) (int64, error) {
+	if err := d.requireMutableInterceptTask(taskID); err != nil {
+		return 0, err
+	}
 	raw := json.RawMessage(input)
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
@@ -140,6 +176,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 
 // DecideInterceptPending updates a pending record's status (allowed/denied/timeout).
 func (d *DB) DecideInterceptPending(id int64, status string) error {
+	if err := d.requireMutableInterceptPending(id); err != nil {
+		return err
+	}
 	_, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW() WHERE id=$1`, id, status)
 	return err
 }
@@ -149,6 +188,9 @@ func (d *DB) DecideInterceptPending(id int64, status string) error {
 // rule matches for observability — they don't block and need no user action, so unlike
 // CreateInterceptPending (which starts 'pending') this records the outcome directly.
 func (d *DB) CreateDecidedIntercept(ruleID, convID int64, taskID, agentName, toolName string, input []byte, status, reason string, audits ...*InterceptAudit) (int64, error) {
+	if err := d.requireMutableInterceptTask(taskID); err != nil {
+		return 0, err
+	}
 	raw := json.RawMessage(input)
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
