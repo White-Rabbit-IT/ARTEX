@@ -140,7 +140,7 @@ prepare_state() {
   # A dry-run is deliberately non-mutating: it does not create an outbox,
   # sender state, lock file, receipt directory, or Hermes process.
   (( DRY_RUN )) && return 0
-  mkdir -p -m 0700 -- "$DELIVERED_DIR" "$RETRY_DIR"
+  mkdir -p -- "$DELIVERED_DIR" "$RETRY_DIR"
   chmod 0700 -- "$STATE_DIR" "$DELIVERED_DIR" "$RETRY_DIR"
 }
 
