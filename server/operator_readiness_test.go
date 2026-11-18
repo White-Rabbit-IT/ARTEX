@@ -149,7 +149,7 @@ func TestOperatorReadinessReportsBootstrapCompletionWithoutRunningWork(t *testin
 	}
 	t.Cleanup(func() {
 		for _, template := range templates.Templates {
-			if err := g.m.pg.DeleteTaskTemplate(template.ID); err != nil {
+			if _, err := g.m.pg.DeleteTaskTemplate(template.ID); err != nil {
 				t.Errorf("cleanup workflow template %d: %v", template.ID, err)
 			}
 		}
@@ -207,7 +207,7 @@ func TestOperatorReadinessReportsTemplateConflictWithoutMutatingIt(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := g.m.pg.DeleteTaskTemplate(conflicting.ID); err != nil {
+		if _, err := g.m.pg.DeleteTaskTemplate(conflicting.ID); err != nil {
 			t.Errorf("cleanup conflicting template: %v", err)
 		}
 	})
