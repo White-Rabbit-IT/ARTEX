@@ -340,6 +340,9 @@ func requireMutableArchiveRecoveryTarget(pg *pgdb.DB, archiveID, taskID int64) e
 	if task != nil && task.IsSyntheticCalibration() {
 		return fmt.Errorf("%w: task %d", pgdb.ErrSystemTaskImmutable, taskID)
 	}
+	if task != nil && task.IsSyntheticAgentCalibration() {
+		return fmt.Errorf("%w: task %d", pgdb.ErrSyntheticAgentCalibrationImmutable, taskID)
+	}
 	return nil
 }
 

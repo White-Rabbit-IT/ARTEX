@@ -59,6 +59,16 @@ func ToolAugment() ToolAugmentFunc {
 // DeferredInfo, and a cleanup func the caller must defer (closes MCP clients).
 // Built-in base tools are kept as-is — never filtered (built-in tools stay at the code layer, no visibility filtering).
 func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) ([]actool.CoreTool, DeferredInfo, func()) {
+	// The synthetic calibration policy is a capability boundary, not a prompt
+	// instruction. Return before ToolAugment so visible Skills/MCP clients are
+	// never constructed or connected, before ToolResolve so catalog/custom
+	// plumbing cannot influence the tool list, and before RAG/workflow helpers.
+	// FinaliseTools is still called again after withWebFetch in every execution
+	// role, closing the late-injection path as well.
+	if IsSyntheticAgentCalibration(ctx) {
+		tools, def := FinaliseTools(ctx, agentKey, nil, DeferredInfo{})
+		return tools, def, func() {}
+	}
 	var (
 		def     DeferredInfo
 		cleanup = func() {}

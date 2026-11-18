@@ -67,6 +67,9 @@ type TaskDTO struct {
 	// SystemTaskKind is non-empty only for ARTEX-owned fixed fixtures. The UI
 	// uses it to mark CAL-00 read-only; server guards remain authoritative.
 	SystemTaskKind string `json:"system_task_kind,omitempty"`
+	// ExecutionPolicy is a read-only marker for a product-owned runtime
+	// capability contract. It is never accepted by ordinary task creation.
+	ExecutionPolicy string `json:"execution_policy,omitempty"`
 }
 
 // FindingSeverityDTO is the per-severity finding count shown in the task list (critical/high/medium/low).
@@ -151,6 +154,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		PlanQuietMode:      t.PlanQuietMode,
 		TargetGate:         t.targetGate.Load(),
 		SystemTaskKind:     t.systemKind,
+		ExecutionPolicy:    t.executionPolicy,
 	}
 }
 

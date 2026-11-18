@@ -323,6 +323,14 @@ export const api = {
       already_present: boolean;
       task: Task;
     }>("/calibration/synthetic"),
+  // Starts the fixed synthetic-agent calibration lane. This deliberately
+  // accepts no caller-authored target, prompt, source, credential, tool, or
+  // provider settings; the server owns the complete bounded policy.
+  createSyntheticAgentCalibration: () => post<Task>("/calibration/synthetic-agent"),
+  // Retries only a terminal failed fixed calibration. It is intentionally a
+  // distinct empty-body endpoint: repeating the initial start action never
+  // spends another provider budget.
+  retrySyntheticAgentCalibration: () => post<Task>("/calibration/synthetic-agent/retry"),
   // Creates fixed reusable preparation templates only. This endpoint never
   // creates a task or dispatches an agent, provider, tool, or target request.
   createResearchWorkflowTemplates: () => post<ResearchWorkflowTemplatesResult>("/research-workflow-templates"),

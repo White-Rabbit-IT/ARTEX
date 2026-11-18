@@ -100,6 +100,12 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 	if t.IsSyntheticCalibration() {
 		return taskControlResult{ID: t.ID}, ErrSystemTaskImmutable
 	}
+	if t.IsSyntheticAgentCalibration() {
+		// The one-shot lane is started only by its dedicated endpoint.  Normal
+		// pause/resume admission would invoke the generic planner/worker path.
+		// Deletion remains the explicit operator stop/cleanup mechanism.
+		return taskControlResult{ID: t.ID}, db.ErrSyntheticAgentCalibrationImmutable
+	}
 	out := taskControlResult{ID: t.ID}
 	switch action {
 	case "pause":

@@ -190,7 +190,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// that router through Agent bindings and then the global provider, so adding a
 	// first chain to a running task takes effect on its very next LLM call.
 	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
-		if !s.taskRuntimeAvailable(t, "planner", "worker") {
+		keys := []string{"planner", "worker"}
+		if t != nil && t.IsSyntheticAgentCalibration() {
+			// The policy lane runs one fixed Worker only.  It must never create a
+			// planner or inherit an Auto/Pentest agent binding.
+			keys = []string{"worker"}
+		}
+		if !s.taskRuntimeAvailable(t, keys...) {
 			return nil, nil
 		}
 		b := s.agentsForTask(t)
@@ -311,6 +317,20 @@ func (s *Server) restoreTaskRuntimes() {
 		if t.IsSyntheticCalibration() {
 			continue
 		}
+		if t.IsSyntheticAgentCalibration() {
+			// Never resume a provider-backed calibration merely because ARTEX
+			// restarted.  The caller must explicitly create/start it through the
+			// dedicated authenticated action; an interrupted attempt gets a
+			// transactional local failure receipt instead of a generic fallback
+			// run. A running fixed intent keeps its lease and can be retried only
+			// after the normal stale-heartbeat rule is satisfied.
+			if !isTerminalStatus(t.lifecycleSnapshot().Status) {
+				if _, err := m.MarkSyntheticAgentCalibrationInterrupted(t.ID); err != nil {
+					log.Printf("[synthetic-agent-calibration] fail interrupted task %s on startup: %v", t.ID, err)
+				}
+			}
+			continue
+		}
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
@@ -332,6 +352,9 @@ func (s *Server) restoreTaskRuntimes() {
 	// FIFO. Paused loops remain idle; queued tasks are admitted below as slots allow.
 	for _, t := range m.List() {
 		lifecycle := t.lifecycleSnapshot()
+		if t.IsSyntheticAgentCalibration() {
+			continue
+		}
 		if !lifecycle.Queued && !isTerminalStatus(lifecycle.Status) {
 			s.engine.Run(s.ctx, t)
 		}
@@ -764,6 +787,14 @@ func (s *Server) Handler() http.Handler {
 	// CAL-00 is intentionally distinct from normal task admission: it creates
 	// one terminal, non-runnable UI/provenance fixture and never launches work.
 	mux.HandleFunc("POST /api/calibration/synthetic", s.createSyntheticCalibration)
+	// The synthetic-agent calibration is a separate, fixed, product-owned
+	// runnable lane.  It accepts no target/prompt/tool/profile payload and never
+	// goes through ordinary POST /api/tasks admission.
+	mux.HandleFunc("POST /api/calibration/synthetic-agent", s.createSyntheticAgentCalibration)
+	// Retrying the policy task is intentionally a separate, empty-body action;
+	// a repeat start click only observes the existing attempt and cannot silently
+	// consume another provider budget.
+	mux.HandleFunc("POST /api/calibration/synthetic-agent/retry", s.retrySyntheticAgentCalibration)
 	// Research workflow templates are reusable planning presets. This route is
 	// intentionally distinct from normal task admission and cannot launch work.
 	mux.HandleFunc("POST /api/research-workflow-templates", s.createResearchWorkflowTemplates)
@@ -1289,6 +1320,9 @@ func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	if !s.engine.beginTaskOperation(t.ID) {
 		writeErr(w, 409, "task is being deleted; cannot control intents")
 		return
@@ -1341,6 +1375,9 @@ func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
 	if err != nil {
 		writeErr(w, 400, "bad intent id")
@@ -1383,6 +1420,9 @@ func (s *Server) rerunBlocked(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
+		return
+	}
+	if !s.requireMutableTask(w, t) {
 		return
 	}
 	if !s.engine.beginTaskOperation(t.ID) {
@@ -1779,6 +1819,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 			return
 		}
+		if source.IsSyntheticAgentCalibration() {
+			writeErr(w, http.StatusConflict, syntheticAgentCalibrationImmutableMessage)
+			return
+		}
 		seenSources[id] = true
 		sourceIDs = append(sourceIDs, id)
 	}
@@ -1865,6 +1909,10 @@ func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
+		return
+	}
+	if t.IsSyntheticAgentCalibration() {
+		writeErr(w, http.StatusConflict, syntheticAgentCalibrationImmutableMessage)
 		return
 	}
 	// Any lifecycle state (including terminal) may edit the chain: after the task ends, main-agent conversations still run on it,
@@ -2589,6 +2637,13 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad finding id")
 		return
 	}
+	// Resolve first only to enforce the owner policy before caller data is
+	// decoded. Defer ordinary not-found/database errors until after validation,
+	// preserving the longstanding bad-body response order for normal findings.
+	finding, findingErr := s.m.pg.GetFinding(id)
+	if findingErr == nil && finding != nil && !s.requireMutableFindingOwner(w, finding) {
+		return
+	}
 	var body struct {
 		Status    *string `json:"status"`
 		Severity  *string `json:"severity"`
@@ -2601,6 +2656,14 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
 		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
+		return
+	}
+	if findingErr != nil {
+		writeErr(w, 500, findingErr.Error())
+		return
+	}
+	if finding == nil {
+		writeErr(w, 404, "finding not found")
 		return
 	}
 	if body.Status != nil {
@@ -2679,6 +2742,18 @@ func (s *Server) deleteFinding(w http.ResponseWriter, r *http.Request) {
 	id := int64(atoiDefault(r.PathValue("id"), 0))
 	if id <= 0 {
 		writeErr(w, 400, "bad finding id")
+		return
+	}
+	finding, err := s.m.pg.GetFinding(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if finding == nil {
+		writeErr(w, 404, "finding not found")
+		return
+	}
+	if !s.requireMutableFindingOwner(w, finding) {
 		return
 	}
 	n, err := s.m.pg.DeleteFinding(id)

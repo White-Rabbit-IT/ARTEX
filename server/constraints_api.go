@@ -52,6 +52,9 @@ func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	if !s.engine.beginTaskOperation(t.ID) {
 		writeErr(w, 409, "Task is being deleted; cannot add constraint")
 		return
@@ -89,6 +92,9 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
+		return
+	}
+	if !s.requireMutableTask(w, t) {
 		return
 	}
 	if !s.engine.beginTaskOperation(t.ID) {
@@ -132,6 +138,9 @@ func (s *Server) deleteConstraint(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
+		return
+	}
+	if !s.requireMutableTask(w, t) {
 		return
 	}
 	if !s.engine.beginTaskOperation(t.ID) {

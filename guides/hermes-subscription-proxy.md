@@ -163,6 +163,23 @@ review. Restart or recreate the ARTEX container for an environment change to
 take a predictable effect. It is not a statement that a particular model route
 is approved for private research.
 
+### Narrow synthetic-agent calibration
+
+ARTEX also has a separate, narrower switch for one product-owned route
+qualification. It does **not** enable normal task agents, chat agents, target
+access, or tool-capable work:
+
+```dotenv
+ARTEX_HERMES_SYNTHETIC_CALIBRATION_ALLOW=1
+```
+
+Keep `ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION` unset while using this
+switch. The calibration route is documented in
+[the synthetic-agent calibration guide](synthetic-agent-calibration.md). It
+requires exactly one eligible saved Hermes profile and sends only a fixed
+synthetic prompt and one inert local receipt-tool exchange. It cannot prove
+that Hermes is suitable for private research or a security test.
+
 ## 5. Optional metadata-only Hermes bot feed
 
 The observer is independent of the LLM profile. When explicitly enabled, ARTEX

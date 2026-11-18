@@ -779,6 +779,13 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	if t == nil || t.IsSyntheticCalibration() {
 		return
 	}
+	if t.IsSyntheticAgentCalibration() {
+		// The runnable calibration is not a generic task. Its sole execution
+		// entry is RunPreparedSyntheticAgentCalibration, which receives the
+		// database transaction's exact fixed-intent lease. Calling Run here must
+		// never turn a loaded/task-list record into provider activity.
+		return
+	}
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
@@ -1173,11 +1180,20 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	workCtx, meter := e.budgetIntent(workCtx, t.ID)
 	// nudges deliberately sits outside the model_error rerun loop: the idle-turn rerun
 	// cap is a per-intent total, and one rerun round must not reset it back to zero.
+	hookInner := t.Guard.Hooks()
+	nudgeLimit := e.emptyTurnNudgeLimit()
+	if t.IsSyntheticAgentCalibration() {
+		// The static receipt tool has no target action to gate, and an idle-turn
+		// nudge would create an extra provider request.  Keep the dedicated lane
+		// free of generic guard/steering and retry behaviour.
+		hookInner = nil
+		nudgeLimit = 0
+	}
 	hooks := steerHooks{
-		inner:  t.Guard.Hooks(),
+		inner:  hookInner,
 		drain:  func() (string, bool) { return e.drainSteer(iid) },
 		nudges: &atomic.Int64{},
-		limit:  e.emptyTurnNudgeLimit(),
+		limit:  nudgeLimit,
 		label:  label,
 		budget: meter,
 	}
@@ -1196,6 +1212,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// the intent still belongs to this work and the task is not paused/killed/cancelled
 	// [and has not entered settlement]; otherwise yield to the matching branch (no retries during settlement, so backoff does not eat into other workers' graceful-settlement window).
 	maxRetries, retryBackoff := e.modelErrorRetryPolicy()
+	if t.IsSyntheticAgentCalibration() {
+		// One synthetic attempt is one receipt exchange.  A model error is an
+		// honest terminal result, never a generic worker replay.
+		maxRetries = 0
+	}
 	for attempt := 1; attempt <= maxRetries &&
 		retryableWorkerModelError(reason, err) &&
 		workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
@@ -1353,6 +1374,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+	if t != nil && t.IsSyntheticAgentCalibration() {
+		return db.ErrSyntheticAgentCalibrationImmutable
+	}
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}

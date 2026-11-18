@@ -96,6 +96,18 @@ func (s *Server) deepenFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad finding id")
 		return
 	}
+	// In a configured server this global finding-id route resolves the task owner
+	// before inspecting human follow-up text. Ordinary lookup errors are deferred
+	// until after validation, preserving this endpoint's existing bad-body
+	// behavior; a product-owned owner is rejected immediately.
+	var finding *db.DBFinding
+	var findingErr error
+	if s != nil && s.m != nil && s.m.pg != nil {
+		finding, findingErr = s.m.pg.GetFinding(id)
+		if findingErr == nil && finding != nil && !s.requireMutableFindingOwner(w, finding) {
+			return
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 	var req struct {
 		Description string `json:"description"`
@@ -119,13 +131,14 @@ func (s *Server) deepenFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	finding, err := s.m.pg.GetFinding(id)
-	if err != nil {
-		writeErr(w, 500, err.Error())
+	if findingErr != nil {
+		writeErr(w, 500, findingErr.Error())
 		return
 	}
 	if finding == nil {
-		writeErr(w, 404, "finding not found")
+		// The nil manager branch is used only by deliberately incomplete unit
+		// tests. Preserve normal error handling rather than panic.
+		writeErr(w, 500, "finding service unavailable")
 		return
 	}
 	if finding.TaskID == nil || finding.NodeID == nil {

@@ -215,6 +215,20 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 
 func (s *Server) sideParent(w http.ResponseWriter, r *http.Request, kind string) (sidequestion.Parent, bool) {
 	p := sidequestion.Parent{}
+	// A task-scoped side question can create a separate provider-backed
+	// conversation.  Reject a product-owned bounded calibration before checking
+	// service state or parsing any request body.  Reads remain available for
+	// ordinary task history; CAL-00 retains its existing route-level behavior.
+	if kind != "conversation" && r.Method != http.MethodGet {
+		t, ok := s.m.Task(r.PathValue("id"))
+		if !ok {
+			writeErr(w, 404, "task not found")
+			return p, false
+		}
+		if !s.requireMutableTask(w, t) {
+			return p, false
+		}
+	}
 	if s.side == nil || s.m.pg == nil {
 		writeErr(w, 503, "side-question service unavailable")
 		return p, false

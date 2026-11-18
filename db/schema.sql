@@ -546,6 +546,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- existing and user-created tasks on the ordinary lifecycle; named kinds
     -- are reserved for fixed product fixtures such as CAL-00.
     system_kind   TEXT NOT NULL DEFAULT '' CONSTRAINT ck_tasks_system_kind CHECK (system_kind IN ('', 'synthetic_calibration')),
+    -- Execution policies select a product-owned runtime capability contract.
+    -- They are intentionally distinct from system_kind: the synthetic-agent
+    -- calibration is runnable through a dedicated, bounded engine path.
+    execution_policy TEXT NOT NULL DEFAULT '' CONSTRAINT ck_tasks_execution_policy CHECK (execution_policy IN ('', 'synthetic_calibration_v1')),
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -576,6 +580,26 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEF
 -- through migration 0006 for existing databases; schema.sql itself remains
 -- idempotent because it runs at every startup.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS system_kind TEXT NOT NULL DEFAULT '';
+-- Persistent runtime capability discriminator. The accompanying named CHECK
+-- arrives through migration 0007 for existing databases; schema.sql remains
+-- idempotent because it runs at every startup.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_policy TEXT NOT NULL DEFAULT '';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tasks'::regclass
+          AND conname = 'ck_tasks_execution_policy'
+    ) THEN
+        ALTER TABLE tasks
+            ADD CONSTRAINT ck_tasks_execution_policy
+            CHECK (execution_policy IN ('', 'synthetic_calibration_v1'));
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_synthetic_agent_calibration_live
+    ON tasks (execution_policy)
+    WHERE execution_policy = 'synthetic_calibration_v1' AND deleted_at IS NULL;
 -- queued_at makes admission FIFO reflect the actual enqueue order rather than the
 -- task creation order. queue_mode distinguishes first bootstrap from resuming an
 -- exploration that already owns goals/history.

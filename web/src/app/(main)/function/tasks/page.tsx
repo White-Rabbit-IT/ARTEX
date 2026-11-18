@@ -329,6 +329,8 @@ export default function TasksPage() {
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
   const [creatingSyntheticCalibration, setCreatingSyntheticCalibration] = React.useState(false);
+  const [creatingSyntheticAgentCalibration, setCreatingSyntheticAgentCalibration] = React.useState(false);
+  const [retryingSyntheticAgentCalibration, setRetryingSyntheticAgentCalibration] = React.useState(false);
   const [creatingResearchWorkflowTemplates, setCreatingResearchWorkflowTemplates] = React.useState(false);
   const [templateReloadKey, setTemplateReloadKey] = React.useState(0);
 
@@ -382,6 +384,16 @@ export default function TasksPage() {
       );
     });
   }, [tasks, query, statusFilter, categoryFilter]);
+
+  const retryableSyntheticAgentCalibration = React.useMemo(
+    () =>
+      tasks.find(
+        (task) =>
+          task.execution_policy === "synthetic_calibration_v1" &&
+          (task.status === "failed" || task.status === "timeout"),
+      ) ?? null,
+    [tasks],
+  );
 
   const sortNowSec = sortField === "duration" ? nowSec : 0;
   const ordered = React.useMemo(() => {
@@ -525,6 +537,36 @@ export default function TasksPage() {
       setCreatingSyntheticCalibration(false);
     }
   }, [creatingSyntheticCalibration, refreshCategoriesAndTasks]);
+
+  const createSyntheticAgentCalibration = React.useCallback(async () => {
+    if (creatingSyntheticAgentCalibration) return;
+    setCreatingSyntheticAgentCalibration(true);
+    try {
+      const task = await api.createSyntheticAgentCalibration();
+      toast.success(`Bounded synthetic-agent calibration is ready as task #${task.id}`);
+      refreshCategoriesAndTasks();
+    } catch (error) {
+      toast.error(`Synthetic-agent calibration failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setCreatingSyntheticAgentCalibration(false);
+    }
+  }, [creatingSyntheticAgentCalibration, refreshCategoriesAndTasks]);
+
+  const retrySyntheticAgentCalibration = React.useCallback(async () => {
+    if (retryingSyntheticAgentCalibration) return;
+    setRetryingSyntheticAgentCalibration(true);
+    try {
+      const task = await api.retrySyntheticAgentCalibration();
+      toast.success(`Bounded synthetic-agent calibration retry started as task #${task.id}`);
+      refreshCategoriesAndTasks();
+    } catch (error) {
+      toast.error(`Synthetic-agent calibration retry failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setRetryingSyntheticAgentCalibration(false);
+    }
+  }, [refreshCategoriesAndTasks, retryingSyntheticAgentCalibration]);
 
   const createResearchWorkflowTemplates = React.useCallback(async () => {
     if (creatingResearchWorkflowTemplates) return;
@@ -963,6 +1005,17 @@ export default function TasksPage() {
                 creating={creatingSyntheticCalibration}
                 onCreate={createSyntheticCalibration}
               />
+              <SyntheticAgentCalibrationDialog
+                creating={creatingSyntheticAgentCalibration}
+                onCreate={createSyntheticAgentCalibration}
+              />
+              {retryableSyntheticAgentCalibration && (
+                <RetrySyntheticAgentCalibrationDialog
+                  retrying={retryingSyntheticAgentCalibration}
+                  task={retryableSyntheticAgentCalibration}
+                  onRetry={retrySyntheticAgentCalibration}
+                />
+              )}
               <ResearchWorkflowTemplatesDialog
                 creating={creatingResearchWorkflowTemplates}
                 onCreate={createResearchWorkflowTemplates}
@@ -1261,7 +1314,17 @@ const TaskRow = React.memo(function TaskRow({
               CAL-00 · read-only
             </span>
           ) : (
-            <TaskNameEditor task={task} onRename={onRename} />
+            <>
+              {task.execution_policy === "synthetic_calibration_v1" && (
+                <span
+                  className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300"
+                  title="Product-owned synthetic calibration: a bounded local/synthetic agent lane with no target, shell, filesystem, network, scanner, browser, MCP, skills, credentials, traffic, or proxy access"
+                >
+                  Synthetic agent · bounded
+                </span>
+              )}
+              <TaskNameEditor task={task} onRename={onRename} />
+            </>
           )}
           {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
           {taskIsPinned(task) && <PinIcon className="text-primary size-4 shrink-0" aria-label="Pinned" />}
@@ -1592,6 +1655,129 @@ function SyntheticCalibrationDialog({
           >
             {creating && <Spinner data-icon="inline-start" />}
             Create CAL-00
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// SyntheticAgentCalibrationDialog is deliberately separate from both CAL-00
+// and the normal task composer. It exposes no caller-controlled configuration:
+// the server creates one fixed synthetic-only task with its own immutable
+// execution policy. It is a safe route qualification, not authorization to
+// test a real target or send private research material to a provider.
+function SyntheticAgentCalibrationDialog({
+  creating,
+  onCreate,
+}: {
+  creating: boolean;
+  onCreate: () => Promise<void>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => !creating && setOpen(next)}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={creating}>
+          {creating ? <Spinner data-icon="inline-start" /> : <ShieldCheckIcon data-icon="inline-start" />}
+          Synthetic agent calibration
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Start the bounded synthetic-agent calibration?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This creates one product-owned local/synthetic calibration task to qualify the reviewed Hermes route and
+            ARTEX lifecycle. The server fixes its goal, budget, and execution policy; this dialog accepts no target,
+            URL, prompt, source, credential, tool, skill, MCP, proxy, or provider settings.
+          </AlertDialogDescription>
+          <AlertDialogDescription>
+            The calibration has no access to a target, shell, filesystem, network, scanner, browser, MCP, skills,
+            credentials, traffic capture, or proxy. Do not include Firedancer or other private research material in
+            any related interaction. This is not authorization to run a security test.
+          </AlertDialogDescription>
+          <AlertDialogDescription>
+            If the fixed calibration task already exists, this Start action only returns its current attempt. It never
+            restarts a failed or completed calibration. A failed attempt has a separate, explicit retry action so a
+            new bounded provider budget cannot be consumed by a repeat click.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={creating}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={creating}
+            onClick={async (event) => {
+              event.preventDefault();
+              try {
+                await onCreate();
+                setOpen(false);
+              } catch {
+                // onCreate has already shown the actionable error toast.
+              }
+            }}
+          >
+            {creating && <Spinner data-icon="inline-start" />}
+            Start bounded calibration
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// RetrySyntheticAgentCalibrationDialog is deliberately distinct from the
+// initial start control. The server accepts no request payload and only retries
+// the one fixed failed/timeout policy task; all prior local receipts remain in
+// the evidence trail.
+function RetrySyntheticAgentCalibrationDialog({
+  retrying,
+  task,
+  onRetry,
+}: {
+  retrying: boolean;
+  task: Task;
+  onRetry: () => Promise<void>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const statusLabel = task.status === "timeout" ? "timed-out" : "failed";
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => !retrying && setOpen(next)}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={retrying}>
+          {retrying ? <Spinner data-icon="inline-start" /> : <Undo2Icon data-icon="inline-start" />}
+          Retry failed calibration
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Retry the bounded synthetic-agent calibration?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Task #{task.id} has a {statusLabel} bounded calibration attempt. Retry creates a new fixed local/synthetic
+            attempt only after the server rechecks the same reviewed Hermes profile, the closed two-node graph, and any
+            prior claim lease. It preserves prior activity and model records.
+          </AlertDialogDescription>
+          <AlertDialogDescription>
+            The retry still has no target, URL, source tree, credential, shell, filesystem, network, scanner, browser,
+            MCP, skill, traffic, or proxy capability. It must not be used for Firedancer or any other private research
+            material, and it is not a security-test authorization.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={retrying}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={retrying}
+            onClick={async (event) => {
+              event.preventDefault();
+              try {
+                await onRetry();
+                setOpen(false);
+              } catch {
+                // onRetry already displays the actionable failure toast.
+              }
+            }}
+          >
+            {retrying && <Spinner data-icon="inline-start" />}
+            Retry fixed calibration
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

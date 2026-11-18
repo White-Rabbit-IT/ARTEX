@@ -196,6 +196,33 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	if pt.IsSyntheticAgentCalibration() {
+		// Persisted policy is not enough by itself. Only the dedicated engine
+		// attaches the in-process marker that activates agent.FinaliseTools;
+		// this prevents a future generic Worker/Main/Chat path from borrowing
+		// this restricted Hermes profile without the deny-by-default tool set.
+		if r.agentKey != "worker" || !agent.IsSyntheticAgentCalibration(ctx) {
+			return sel, errors.New("synthetic agent calibration may run only through its dedicated worker path")
+		}
+		if len(pt.LLMProfileIDs) != 1 || pt.ActiveLLMProfileID == nil || pt.LLMProfileIDs[0] != *pt.ActiveLLMProfileID {
+			return sel, errors.New("synthetic agent calibration profile binding is not canonical")
+		}
+		profileID := *pt.ActiveLLMProfileID
+		prov, cfg, ok := r.s.syntheticAgentCalibrationProviderForProfile(profileID)
+		if !ok {
+			return sel, errors.New("synthetic agent calibration profile is unavailable or does not meet the local Hermes policy")
+		}
+		// A fixed calibration has no failover chain.  Suppress the ordinary
+		// quota/profile-state path by keeping the selection unpinned after its
+		// one reviewed profile has been resolved.  This prevents a transient
+		// failure from mutating the immutable task chain or reaching another
+		// provider; the dedicated engine records a terminal calibration failure.
+		if !agent.ReserveSyntheticCalibrationModelCall(ctx) {
+			return sel, errors.New("synthetic agent calibration reached its fixed two-call provider limit")
+		}
+		sel.provider, sel.retry = prov, cfg.Retry
+		return sel, nil
+	}
 	if err := r.s.agentBindingExecutionError(r.agentKey); err != nil {
 		// Unlike an invalid/deleted binding, a deliberately disabled Hermes
 		// binding is a policy stop: do not fall through and send this task's
@@ -254,6 +281,13 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	if err != nil || pt == nil {
 		return agent.Config{}, false
 	}
+	if pt.IsSyntheticAgentCalibration() {
+		if len(pt.LLMProfileIDs) != 1 || pt.ActiveLLMProfileID == nil || pt.LLMProfileIDs[0] != *pt.ActiveLLMProfileID {
+			return agent.Config{}, false
+		}
+		_, cfg, ok := r.s.syntheticAgentCalibrationProviderForProfile(*pt.ActiveLLMProfileID)
+		return cfg, ok
+	}
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg, true
 	}
@@ -278,6 +312,11 @@ func (r *taskLLMRuntime) nonStreaming() bool {
 // maxTokens returns the currently-active source's per-reply output cap.
 // Unresolvable → 0, i.e. send no cap, matching the pre-setting behaviour.
 func (r *taskLLMRuntime) maxTokens() int {
+	if r != nil && r.s != nil && r.s.m != nil {
+		if task, ok := r.s.m.Task(r.taskID); ok && task.IsSyntheticAgentCalibration() {
+			return syntheticAgentCalibrationMaxReplyTokens
+		}
+	}
 	cfg, _ := r.activeCfg() // zero value 0 when no configuration resolves
 	return cfg.MaxTokens
 }
@@ -314,7 +353,7 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 }
 
 func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	ctx = taskLLMProviderContext(ctx, r.taskID)
 	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 
@@ -324,8 +363,21 @@ func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) 
 // duplicated model output or tool execution (the "committed" bookkeeping the
 // streaming path needs is unnecessary here).
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	ctx = taskLLMProviderContext(ctx, r.taskID)
 	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
+}
+
+// taskLLMProviderContext adds the ordinary local usage-record key only outside
+// the bounded synthetic lane.  Worker.executeSyntheticCalibration deliberately
+// removes inherited context before it reaches the provider; re-attaching a
+// task registry ID here would defeat that boundary for a custom provider or
+// transport wrapper.  The synthetic recorder still stores its static route
+// receipt locally, but it is intentionally not associated with a task ID.
+func taskLLMProviderContext(ctx context.Context, taskID string) context.Context {
+	if agent.IsSyntheticAgentCalibration(ctx) {
+		return ctx
+	}
+	return llmrec.WithTaskID(ctx, taskID)
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
@@ -722,6 +774,19 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 	if t == nil || t.IsSyntheticCalibration() || len(agentKeys) == 0 {
 		return false
 	}
+	if t.IsSyntheticAgentCalibration() {
+		// This policy has no Planner/Main/Auto surface. The dedicated engine
+		// starts one Worker under a private in-process capability only.
+		if len(agentKeys) != 1 || agentKeys[0] != "worker" {
+			return false
+		}
+		state := t.llmStateSnapshot()
+		if len(state.ProfileIDs) != 1 || state.ActiveID == nil || state.ProfileIDs[0] != *state.ActiveID {
+			return false
+		}
+		_, _, ok := s.syntheticAgentCalibrationProviderForProfile(*state.ActiveID)
+		return ok
+	}
 	state := t.llmStateSnapshot()
 	unboundReady := false
 	if len(state.ProfileIDs) > 0 {
@@ -746,6 +811,40 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 		}
 	}
 	return true
+}
+
+// syntheticAgentCalibrationProviderForProfile resolves the one locally saved
+// Hermes profile only for the product-owned synthetic calibration policy. It
+// does not relax providerForProfile's broader task/chat execution guard.
+func (s *Server) syntheticAgentCalibrationProviderForProfile(id int64) (llm.Provider, agent.Config, bool) {
+	if s == nil || s.m == nil || s.m.pg == nil || !hermesSyntheticAgentCalibrationAllowed() || id <= 0 {
+		return nil, agent.Config{}, false
+	}
+	p, err := s.m.pg.ProfileByID(id)
+	if err != nil || p == nil {
+		return nil, agent.Config{}, false
+	}
+	cfg, ok := s.loadProfileConfig(id)
+	if !ok || !syntheticAgentCalibrationProfileAllowed(p, cfg) {
+		return nil, agent.Config{}, false
+	}
+	// The calibration must not reuse the ordinary profile cache: an entry there
+	// may have been constructed while broad Hermes execution was enabled and can
+	// carry side-question/failover wiring. Build an isolated direct provider for
+	// this fixed request path instead.
+	cfg.Retry = agent.RetryConfig{
+		ConnectAttempts: -1,
+		EmptyAttempts:   -1,
+		StreamAttempts:  -1,
+	}
+	prov, err := cfg.NewProvider()
+	if err != nil {
+		return nil, agent.Config{}, false
+	}
+	// Fixed synthetic text is still recorded locally for an auditable route
+	// receipt. Do not bind side-question machinery to this isolated lane.
+	prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+	return prov, cfg, true
 }
 
 func (s *Server) invalidateTaskAgents() {

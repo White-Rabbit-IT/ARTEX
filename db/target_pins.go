@@ -199,14 +199,7 @@ func requireMutableTargetScope(q interceptTaskQueryer, scope TargetScopeRef) err
 	if scope.TaskID <= 0 {
 		return nil
 	}
-	systemKind, err := interceptTaskSystemKind(q, scope.TaskID)
-	if err != nil {
-		return err
-	}
-	if systemKind != "" {
-		return fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, scope.TaskID)
-	}
-	return nil
+	return interceptTaskMutabilityError(q, scope.TaskID)
 }
 
 // TargetRequest is a new target approval request: the intercept_pending row a
@@ -310,12 +303,9 @@ FOR UPDATE OF pending`, id).Scan(&taskID, &convID, &raw)
 	if err != nil {
 		return nil, false, err
 	}
-	resolvedTaskID, systemKind, err := interceptPendingTaskSystemKind(tx, taskID)
+	resolvedTaskID, err := interceptPendingTaskMutabilityError(tx, taskID)
 	if err != nil {
 		return nil, false, err
-	}
-	if systemKind != "" {
-		return nil, false, fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
 	}
 	scope := TargetScopeRef{TaskID: resolvedTaskID, ConversationID: convID.Int64}
 	var audit InterceptAudit

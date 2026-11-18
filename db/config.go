@@ -342,6 +342,27 @@ FOR UPDATE`, id)
 	if isDefault {
 		return false, ErrActiveLLMProfileDelete
 	}
+	// A synthetic-agent calibration task has one reviewed provider binding and
+	// no generic fallback. Deleting that profile would otherwise clear the chain
+	// and let a later engine path resolve a different profile, so fail closed
+	// before any profile-reference mutation occurs.
+	var syntheticTaskID int64
+	err = tx.QueryRowContext(ctx, `SELECT t.id
+FROM tasks t
+WHERE COALESCE(t.execution_policy,'')=$2
+  AND (
+    t.llm_profile_id=$1
+    OR t.active_llm_profile_id=$1
+    OR EXISTS (SELECT 1 FROM task_llm_profiles x WHERE x.task_id=t.id AND x.profile_id=$1)
+  )
+ORDER BY t.id
+LIMIT 1`, id, SyntheticAgentCalibrationExecutionPolicy).Scan(&syntheticTaskID)
+	if err == nil {
+		return false, fmt.Errorf("%w: profile %d is bound to task %d", ErrSyntheticAgentCalibrationImmutable, id, syntheticTaskID)
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
 
 	type affectedTask struct {
 		id        int64

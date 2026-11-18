@@ -404,6 +404,12 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 }
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+	if IsSyntheticAgentCalibration(ctx) {
+		// This is intentionally before any ToolSet, graph, asset, intent,
+		// work-dir, proxy, transcript, or user-message processing. The only
+		// provider payload in this lane is the fixed prompt/input/tool below.
+		return w.executeSyntheticCalibration(ctx, emit)
+	}
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -427,6 +433,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
 	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, nodeSummary(intent)), "worker", base)
 	defer cleanup()
+	// WebFetch is intentionally injected after AugmentTools, so the final policy
+	// gate must run here too. It also clears deferred MCP metadata for a bounded
+	// synthetic calibration before agentcore can create its session.
+	tools, def = FinaliseTools(ctx, "worker", withWebFetch(ctx, tools, w.proxyAddr, w.proxyCACert), def)
+	syntheticCalibration := IsSyntheticAgentCalibration(ctx)
 
 	// The intent is the worker's [sole duty, an invariant across the whole run] → it
 	// goes into the system prompt together with the launch instruction and the raw
@@ -487,11 +498,12 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped)
 	}
+	maxTurns := syntheticWorkerTurnCap(syntheticCalibration, w.turnCap(ctx))
 	opts := agentcore.Options{
 		Provider:        w.prov,
 		SystemPrompt:    system,
 		DynamicBoundary: boundary,
-		Tools:           withWebFetch(ctx, tools, w.proxyAddr, w.proxyCACert),
+		Tools:           tools,
 		DeferredTools:   def.Deferred,
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
@@ -501,7 +513,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// when proxy is empty. Every redirect hop goes through the target gate.
 		// Web search (optional). ddgs needs no key; brave-free needs BraveKey; tavily needs TavilyKey.
 		// WebSearchProxy is a dedicated egress proxy (http/https/socks5), unrelated to the traffic-recording MITM proxy; empty = direct.
-		EnableWebSearch:       w.webSearch.Enabled,
+		EnableWebSearch:       w.webSearch.Enabled && !syntheticCalibration,
 		WebSearchBackend:      w.webSearch.Backend,
 		BraveSearchAPIKey:     w.webSearch.BraveKey,
 		TavilySearchAPIKey:    w.webSearch.TavilyKey,
@@ -511,9 +523,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchProxy:        w.webSearch.Proxy,
 		// Bash subcommands' HTTP goes through the recording proxy + trusts its CA by
 		// default (tools need no -x/-k).
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		BashEnv:    syntheticBashEnv(syntheticCalibration, w.proxyAddr, w.proxyCACert),
 		WorkingDir: runDir,
-		MaxTurns:   w.turnCap(ctx), // 0 = unlimited (configurable in agent management); clamped by the intent budget
+		MaxTurns:   maxTurns, // Synthetic calibration has a fixed two-turn receipt cap; ordinary workers retain the configured/intention cap.
 		// Wall-clock budget, judged at turn boundaries without interrupting mid-flight;
 		// 0 = unlimited. When a task-level deadline exists, clamp to min(own budget, time
 		// until the deadline) so this run naturally enters wrap-up when the task hits its
@@ -536,6 +548,12 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 
 		// On by default; ARTEX_UNTRUSTED_BOUNDARY=0 opts out: nonce-frame tool output as untrusted data.
 		UntrustedOutputBoundary: untrustedBoundaryEnabled(),
+	}
+	// agentcore exposes TodoWrite when a TodoStore is present. The synthetic
+	// lane is deliberately receipt-only, so do not leave that implicit tool path
+	// available after the explicit final tool filter above.
+	if syntheticCalibration {
+		opts.Todos = nil
 	}
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
@@ -611,4 +629,45 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
 	return reason, tsx.Writes(), err
+}
+
+const syntheticCalibrationSystemPrompt = `You are performing ARTEX synthetic calibration version 1. This is not a security assessment and has no target. Your only permitted action is to call synthetic_receipt exactly once with an empty JSON object. Do not request, infer, reproduce, scan, probe, access, or discuss any target, filesystem, path, repository, credential, traffic, shell, network, browser, proxy, MCP server, skill, or private research material. After the receipt succeeds, respond exactly: Synthetic calibration complete.`
+
+const syntheticCalibrationInput = `Perform the fixed synthetic calibration now. Call synthetic_receipt with {} exactly once, then respond exactly: Synthetic calibration complete.`
+
+const (
+	syntheticCalibrationMaxTokens   = 128
+	syntheticCalibrationMaxDuration = 90 * time.Second
+)
+
+// executeSyntheticCalibration is a standalone, static request path for the
+// first Hermes-backed agent qualification. It must never read the ordinary
+// worker's task graph, assets, intent, paths, proxy settings, transcript, user
+// continuation, skills, or configurable prompts. The server checks the receipt
+// state after this returns; no graph write is treated as proof of success.
+func (w *Worker) executeSyntheticCalibration(ctx context.Context, emit func(db.Activity)) (harness.TerminalReason, WriteCounts, error) {
+	ctx, cancel := cleanSyntheticCalibrationContext(ctx)
+	defer cancel()
+
+	tools, def := FinaliseTools(ctx, "worker", []actool.CoreTool{}, DeferredInfo{})
+	opts := agentcore.Options{
+		Provider:                w.prov,
+		SystemPrompt:            []string{syntheticCalibrationSystemPrompt},
+		Tools:                   tools,
+		DeferredTools:           def.Deferred,
+		UnlockSet:               def.Unlock,
+		PermissionMode:          permission.ModeBypass,
+		MaxTurns:                SyntheticCalibrationMaxTurns,
+		MaxDuration:             syntheticCalibrationMaxDuration,
+		MaxTokens:               syntheticCalibrationMaxTokens,
+		DisableBackgroundTasks:  true,
+		UntrustedOutputBoundary: true,
+	}
+	_, reason, err := captureRun(ctx, opts, syntheticCalibrationInput, func(r db.Activity) {
+		if emit != nil {
+			r.Worker = "synthetic-calibration"
+			emit(r)
+		}
+	})
+	return reason, WriteCounts{}, err
 }

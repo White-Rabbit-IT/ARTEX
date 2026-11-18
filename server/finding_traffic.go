@@ -116,6 +116,11 @@ func (s *Server) findingTrafficAccess(w http.ResponseWriter, r *http.Request, wr
 		writeErr(w, 404, "finding not found")
 		return 0, false
 	}
+	// Write routes are global finding-id routes, not task-scoped URLs. Check the
+	// durable owner before their callers decode request data or touch evidence.
+	if write && !s.requireMutableFindingOwner(w, f) {
+		return 0, false
+	}
 	if taskID := r.URL.Query().Get("context_task"); taskID != "" {
 		task := s.m.ResolveTask(taskID)
 		if task == nil {

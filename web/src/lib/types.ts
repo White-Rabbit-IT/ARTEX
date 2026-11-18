@@ -43,6 +43,10 @@ export interface Task {
   // Non-empty for ARTEX-owned fixed records, such as CAL-00. Such records are
   // inspectable but cannot be edited or executed.
   system_task_kind?: "synthetic_calibration" | string;
+  // Server-owned runtime policy. The synthetic calibration policy is created
+  // only by its dedicated endpoint and is intentionally not an ordinary task
+  // form option.
+  execution_policy?: "synthetic_calibration_v1" | string;
 }
 
 export interface TaskCategory {

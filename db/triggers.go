@@ -170,6 +170,7 @@ SELECT n.id, t.id, t.description, t.goal, n.payload
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id = n.exploration_id
 WHERE n.kind='finding' AND n.id > $1 AND t.deleted_at IS NULL
   AND COALESCE(t.system_kind,'')=''
+  AND COALESCE(t.execution_policy,'')=''
 ORDER BY n.id`, lastID)
 	if err != nil {
 		return nil, err
@@ -197,6 +198,7 @@ func (d *DB) TimedOutTasksSince(lastID int64) ([]TaskEvent, error) {
 SELECT id, description, goal FROM tasks
 WHERE status='timeout' AND deleted_at IS NULL AND id > $1
   AND COALESCE(system_kind,'')=''
+  AND COALESCE(execution_policy,'')=''
 ORDER BY id`, lastID)
 	if err != nil {
 		return nil, err
@@ -223,6 +225,7 @@ func (d *DB) NewTasksSince(lastID int64) ([]TaskEvent, error) {
 SELECT id, description, goal FROM tasks
 WHERE deleted_at IS NULL AND id > $1
   AND COALESCE(system_kind,'')=''
+  AND COALESCE(execution_policy,'')=''
 ORDER BY id`, lastID)
 	if err != nil {
 		return nil, err
@@ -255,6 +258,7 @@ JOIN tasks t ON t.exploration_id = r.exploration_id
 LEFT JOIN activity u ON u.exploration_id = r.exploration_id AND u.tool_use_id = r.tool_use_id AND u.kind='tool_use'
 WHERE r.kind='tool_result' AND r.id > $1 AND r.tool <> '' AND t.deleted_at IS NULL
   AND COALESCE(t.system_kind,'')=''
+  AND COALESCE(t.execution_policy,'')=''
 ORDER BY r.id`, lastID)
 	if err != nil {
 		return nil, err
@@ -279,6 +283,7 @@ SELECT n.id, t.id, t.description, t.goal, n.payload
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id = n.exploration_id
 WHERE n.kind='goal' AND n.state='met' AND t.deleted_at IS NULL
   AND COALESCE(t.system_kind,'')=''
+  AND COALESCE(t.execution_policy,'')=''
 ORDER BY n.id`)
 	if err != nil {
 		return nil, err

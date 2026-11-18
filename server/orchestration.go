@@ -175,6 +175,9 @@ func (s *Server) delegateToTaskKind(ctx context.Context, in json.RawMessage, req
 	if requireMutable && t.IsSyntheticCalibration() {
 		return actool.Errorf(syntheticCalibrationImmutableMessage), nil
 	}
+	if requireMutable && t.IsSyntheticAgentCalibration() {
+		return actool.Errorf(syntheticAgentCalibrationImmutableMessage), nil
+	}
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(in, &m)
 	delete(m, "task_id")

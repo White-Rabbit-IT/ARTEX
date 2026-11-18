@@ -418,12 +418,19 @@ func (d *DB) ReplaceTaskLLMProfiles(taskID int64, profileIDs []int64, activeProf
 	// Keep the task -> profile lock order shared by all task LLM mutations and
 	// DeleteProfile. Inserts below may take KEY SHARE locks on llm_profiles for
 	// their foreign keys, so the task row must be locked before any of them.
-	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, taskID).Scan(&lockedID); err != nil {
+	var (
+		lockedID        int64
+		executionPolicy string
+	)
+	if err := tx.QueryRow(`SELECT id, COALESCE(execution_policy,'')
+FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, taskID).Scan(&lockedID, &executionPolicy); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("task %d not found", taskID)
 		}
 		return err
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return fmt.Errorf("%w: LLM profile chain", ErrSyntheticAgentCalibrationImmutable)
 	}
 	if _, err := tx.Exec(`DELETE FROM task_llm_profiles WHERE task_id=$1`, taskID); err != nil {
 		return err

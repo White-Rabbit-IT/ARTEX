@@ -106,41 +106,47 @@ func parseInterceptTaskReference(raw string) (taskID int64, canonical bool, err 
 	return id, true, nil
 }
 
-func interceptTaskSystemKind(q interceptTaskQueryer, taskID int64) (string, error) {
-	var systemKind string
-	err := q.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1`, taskID).Scan(&systemKind)
+// interceptTaskMutabilityError resolves the durable task row before any
+// intercept or target-approval record is created, decided, completed, or used
+// to write a target pin. Intercept and target-approval records use a legacy
+// text task reference, and global approval endpoints otherwise have no
+// task-scoped route guard.
+func interceptTaskMutabilityError(q interceptTaskQueryer, taskID int64) error {
+	var systemKind, executionPolicy string
+	err := q.QueryRow(`SELECT COALESCE(system_kind,''), COALESCE(execution_policy,'') FROM tasks WHERE id=$1`, taskID).Scan(&systemKind, &executionPolicy)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Keep legacy/deleted task semantics: a row which points at no durable
-		// task is not silently rewritten, and its caller retains its own
-		// not-found or scope validation behavior.
-		return "", nil
+		// Keep legacy/deleted task semantics: no task row is not silently
+		// rewritten, and callers retain their own not-found or scope behavior.
+		return nil
 	}
 	if err != nil {
-		return "", err
+		return err
 	}
-	return systemKind, nil
+	if systemKind != "" {
+		return fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, taskID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return fmt.Errorf("%w: task %d", ErrSyntheticAgentCalibrationImmutable, taskID)
+	}
+	return nil
 }
 
-// interceptPendingTaskSystemKind resolves a legacy approval-row task reference
-// once, with the same representation used by every guard and downstream sink.
-// A NULL reference is the valid conversation-scoped form. Historic opaque
-// labels are not task references; numeric references must be canonical.
-func interceptPendingTaskSystemKind(q interceptTaskQueryer, raw sql.NullString) (int64, string, error) {
+// interceptPendingTaskMutabilityError resolves a pending-row task reference
+// once, rejects malformed numeric aliases, and then applies the same durable
+// task policy as direct intercept writers.  Opaque historic labels remain
+// readable legacy data; they never name a task policy.
+func interceptPendingTaskMutabilityError(q interceptTaskQueryer, raw sql.NullString) (int64, error) {
 	if !raw.Valid {
-		return 0, "", nil
+		return 0, nil
 	}
 	taskID, canonical, err := parseInterceptTaskReference(raw.String)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	if !canonical {
-		return 0, "", nil
+		return 0, nil
 	}
-	systemKind, err := interceptTaskSystemKind(q, taskID)
-	if err != nil {
-		return 0, "", err
-	}
-	return taskID, systemKind, nil
+	return taskID, interceptTaskMutabilityError(q, taskID)
 }
 
 func scanInterceptRule(row interface{ Scan(...any) error }) (InterceptRule, error) {
@@ -220,25 +226,20 @@ func (d *DB) requireMutableInterceptTask(taskID string) error {
 	if !canonical {
 		return nil
 	}
-	systemKind, err := interceptTaskSystemKind(d, id)
-	if err != nil {
-		return err
-	}
-	if systemKind != "" {
-		return fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, id)
-	}
-	return nil
+	return interceptTaskMutabilityError(d, id)
 }
 
 func (d *DB) requireMutableInterceptPending(id int64) error {
-	system, err := d.IsSystemTaskInterceptPending(id)
+	var taskID sql.NullString
+	err := d.QueryRow(`SELECT task_id FROM intercept_pending WHERE id=$1`, id).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if system {
-		return fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
-	}
-	return nil
+	_, err = interceptPendingTaskMutabilityError(d, taskID)
+	return err
 }
 
 // CreateInterceptPending inserts a pending approval record and returns its ID.

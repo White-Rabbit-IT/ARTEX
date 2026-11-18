@@ -126,6 +126,15 @@ func (s *Server) agentFindingTrafficAccess(ctx context.Context, id int64, write 
 	if f == nil {
 		return fmt.Errorf("%w: finding_id=%d. Evidence tools use the standalone finding record ID; read it from the finding_id field of list_task_findings / get_task_node_detail; do not pass id / finding_node_id", db.ErrFindingNotFound, id)
 	}
+	// An agent tool addresses findings globally, so its caller's task provenance
+	// alone cannot protect a product-owned finding in another task.  Fail before
+	// evidence-store mutation when the finding's durable owner is immutable.
+	// Read-only access retains the established cross-task provenance semantics.
+	if write && f.TaskID != nil {
+		if err := s.m.requireMutableTask(strconv.FormatInt(*f.TaskID, 10)); err != nil {
+			return err
+		}
+	}
 	if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 {
 		task := s.m.ResolveTask(strconv.FormatInt(ri.TaskID, 10))
 		if task == nil {

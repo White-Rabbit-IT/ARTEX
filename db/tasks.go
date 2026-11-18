@@ -66,6 +66,10 @@ type Task struct {
 	// product-owned records with stricter lifecycle rules; callers cannot set
 	// this through TaskCreateOptions.
 	SystemKind string `json:"system_kind,omitempty"`
+	// ExecutionPolicy is empty for an ordinary task. Named values are
+	// product-owned runtime capability contracts; callers cannot select one
+	// through TaskCreateOptions or the ordinary task-create API.
+	ExecutionPolicy string `json:"execution_policy,omitempty"`
 }
 
 // SyntheticCalibrationSystemKind is the persistent discriminator for the
@@ -77,11 +81,24 @@ const SyntheticCalibrationSystemKind = "synthetic_calibration"
 // that reads like a system-task dispatch.
 const SystemTaskKindSyntheticCalibration = SyntheticCalibrationSystemKind
 
+// SyntheticAgentCalibrationExecutionPolicy marks the fixed, product-owned
+// runnable calibration lane. It is deliberately an execution policy rather
+// than a system_kind: CAL-00 system tasks are terminal/non-runnable, whereas
+// this task is admitted only through the dedicated synthetic-agent path.
+const SyntheticAgentCalibrationExecutionPolicy = "synthetic_calibration_v1"
+
 // IsSyntheticCalibration reports whether t is ARTEX's fixed CAL-00 system
 // fixture. The persistent database discriminator survives a process restart
 // and remains present even if a bug or manual data repair alters other fields.
 func (t *Task) IsSyntheticCalibration() bool {
 	return t != nil && t.SystemKind == SystemTaskKindSyntheticCalibration
+}
+
+// IsSyntheticAgentCalibration reports whether t is the bounded runnable
+// synthetic-agent calibration lane. The policy is persisted so a process
+// reload cannot silently turn it into an ordinary task.
+func (t *Task) IsSyntheticAgentCalibration() bool {
+	return t != nil && t.ExecutionPolicy == SyntheticAgentCalibrationExecutionPolicy
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -136,6 +153,9 @@ var (
 	// checked in the DB transaction as well as in server admission code so a
 	// future caller cannot create a relation to CAL-00 by bypassing the UI.
 	ErrSystemTaskImmutable = errors.New("system task is fixed and cannot be modified or used as an inheritance source")
+	// ErrSyntheticAgentCalibrationImmutable prevents generic task mutations from
+	// relaxing the policy-critical fields of ARTEX's bounded synthetic lane.
+	ErrSyntheticAgentCalibrationImmutable = errors.New("synthetic agent calibration policy is immutable")
 )
 
 // NormalizeTaskCompanyIDs validates IDs and removes duplicates while retaining
@@ -381,18 +401,24 @@ func insertTaskRelations(tx *sql.Tx, taskID int64, sourceIDs []int64) error {
 		// so callers outside the HTTP server cannot bypass it.
 		res, err := tx.Exec(`INSERT INTO task_relations(task_id, source_task_id)
 SELECT $1, id FROM tasks
-WHERE id=$2 AND deleted_at IS NULL AND COALESCE(system_kind,'')=''`, taskID, sourceID)
+WHERE id=$2 AND deleted_at IS NULL
+  AND COALESCE(system_kind,'')=''
+  AND COALESCE(execution_policy,'')=''`, taskID, sourceID)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			var systemKind string
-			err := tx.QueryRow(`SELECT COALESCE(system_kind,'') FROM tasks WHERE id=$1 AND deleted_at IS NULL`, sourceID).Scan(&systemKind)
+			var systemKind, executionPolicy string
+			err := tx.QueryRow(`SELECT COALESCE(system_kind,''), COALESCE(execution_policy,'')
+FROM tasks WHERE id=$1 AND deleted_at IS NULL`, sourceID).Scan(&systemKind, &executionPolicy)
 			if err != nil && err != sql.ErrNoRows {
 				return err
 			}
 			if systemKind != "" {
 				return fmt.Errorf("%w: source task %d", ErrSystemTaskImmutable, sourceID)
+			}
+			if executionPolicy != "" {
+				return fmt.Errorf("%w: source task %d", ErrSyntheticAgentCalibrationImmutable, sourceID)
 			}
 			return fmt.Errorf("source task %d not found", sourceID)
 		}
@@ -416,11 +442,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(system_kind,''), COALESCE(llm_rotate,false), first_run_at, deadline_at, target_gate`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(plan_quiet_mode,true), COALESCE(coverage_enabled,true), COALESCE(system_kind,''), COALESCE(execution_policy,''), COALESCE(llm_rotate,false), first_run_at, deadline_at, target_gate`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.SystemKind, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt, &t.TargetGate); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.PlanQuietMode, &t.CoverageEnabled, &t.SystemKind, &t.ExecutionPolicy, &t.LLMRotate, &t.FirstRunAt, &t.DeadlineAt, &t.TargetGate); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -483,8 +509,23 @@ func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 	plan_quiet_mode = CASE WHEN $5::boolean THEN $6 ELSE plan_quiet_mode END,
 	target_gate = CASE WHEN $7::boolean THEN $8 ELSE target_gate END
 WHERE id=$1 AND deleted_at IS NULL
-RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.PlanQuietMode != nil, patch.PlanQuietMode, patch.TargetGate != nil, patch.TargetGate))
+  AND NOT (
+    COALESCE(execution_policy,'')=$9
+    AND $7::boolean
+    AND $8::boolean=false
+  )
+RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.PlanQuietMode != nil, patch.PlanQuietMode, patch.TargetGate != nil, patch.TargetGate, SyntheticAgentCalibrationExecutionPolicy))
 	if err == sql.ErrNoRows {
+		if patch.TargetGate != nil && !*patch.TargetGate {
+			var policy string
+			err := d.QueryRow(`SELECT COALESCE(execution_policy,'') FROM tasks WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&policy)
+			if err == nil && policy == SyntheticAgentCalibrationExecutionPolicy {
+				return nil, fmt.Errorf("%w: target gate", ErrSyntheticAgentCalibrationImmutable)
+			}
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	if err != nil {

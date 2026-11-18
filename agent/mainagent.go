@@ -112,6 +112,12 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // worker/planner sessions — not just the final answer. hooks (the task's
 // target-only Guard) sees every tool call; may be nil.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, hooks harness.HookRunner, emit func(db.Activity), notify, resume func(), notifyGoal func([]string), notifyHint func(string, []string)) (string, error) {
+	// The synthetic calibration policy has one purpose: a static worker receipt.
+	// Fail closed before tools, task state, user text, paths, transcripts, or a
+	// provider can observe anything from a generic main-agent chat invocation.
+	if IsSyntheticAgentCalibration(ctx) {
+		return syntheticMainAgentUnavailableReply, nil
+	}
 	tsx := NewToolSet(ts, "human")
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
@@ -130,6 +136,10 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
+	// Finalise after WebFetch, which is normally injected late. Synthetic runs
+	// receive no main-agent tools and no deferred/unlock metadata.
+	tools, def = FinaliseTools(ctx, "mainagent", withWebFetch(ctx, tools, m.proxyAddr, m.proxyCACert), def)
+	syntheticCalibration := IsSyntheticAgentCalibration(ctx)
 	// this task's working directory <workDir>/tasks/<taskID>, created up front.
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
@@ -138,13 +148,13 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Provider:        m.prov,
 		SystemPrompt:    system,
 		DynamicBoundary: boundary,
-		Tools:           withWebFetch(ctx, tools, m.proxyAddr, m.proxyCACert), // WebFetch: routed through the recording proxy for tracing; loads the proxy CA to verify MITM-resigned HTTPS certificates; every redirect hop is gated
+		Tools:           tools, // FinaliseTools above retains normal WebFetch behavior and removes it for synthetic calibration.
 		DeferredTools:   def.Deferred,
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		// Web search (optional). ddgs needs no key; brave-free needs BraveKey; tavily needs TavilyKey.
 		// WebSearchProxy is a dedicated egress proxy (http/https/socks5), unrelated to the traffic-recording MITM proxy; empty = direct.
-		EnableWebSearch:       m.webSearch.Enabled,
+		EnableWebSearch:       m.webSearch.Enabled && !syntheticCalibration,
 		WebSearchBackend:      m.webSearch.Backend,
 		BraveSearchAPIKey:     m.webSearch.BraveKey,
 		TavilySearchAPIKey:    m.webSearch.TavilyKey,
@@ -152,8 +162,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey:  m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   m.webSearch.DeepSeekModel,
 		WebSearchProxy:        m.webSearch.Proxy,
-		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
-		WorkingDir:            mainDir,                              // this task's working directory <workDir>/tasks/<taskID>
+		BashEnv:               syntheticBashEnv(syntheticCalibration, m.proxyAddr, m.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
+		WorkingDir:            mainDir,                                                            // this task's working directory <workDir>/tasks/<taskID>
 		ToolOutputDir:         cmdOutDir(mainDir),
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window
@@ -165,6 +175,11 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 
 		// On by default; ARTEX_UNTRUSTED_BOUNDARY=0 opts out: nonce-frame tool output as untrusted data.
 		UntrustedOutputBoundary: untrustedBoundaryEnabled(),
+	}
+	// agentcore exposes TodoWrite when a TodoStore is present. The synthetic
+	// main-agent surface is toolless, so clear that implicit capability as well.
+	if syntheticCalibration {
+		opts.Todos = nil
 	}
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks

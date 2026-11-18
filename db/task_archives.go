@@ -240,15 +240,15 @@ func (d *DB) QueueTaskArchive(taskID int64) (*TaskArchive, error) {
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	var name, description, goal, status, categoryName, systemKind string
+	var name, description, goal, status, categoryName, systemKind, executionPolicy string
 	var categoryID *int64
 	var paused, queued bool
 	var deadline *time.Time
 	err = tx.QueryRow(`SELECT COALESCE(t.name,''), t.description, t.goal, t.status,
-	 t.category_id, COALESCE(c.name,''), t.paused, t.queued, t.deadline_at, COALESCE(t.system_kind,'')
+	 t.category_id, COALESCE(c.name,''), t.paused, t.queued, t.deadline_at, COALESCE(t.system_kind,''), COALESCE(t.execution_policy,'')
 FROM tasks t LEFT JOIN task_categories c ON c.id=t.category_id
 WHERE t.id=$1 AND t.deleted_at IS NULL FOR UPDATE OF t`, taskID).Scan(
-		&name, &description, &goal, &status, &categoryID, &categoryName, &paused, &queued, &deadline, &systemKind,
+		&name, &description, &goal, &status, &categoryID, &categoryName, &paused, &queued, &deadline, &systemKind, &executionPolicy,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTaskArchiveNotFound
@@ -258,6 +258,9 @@ WHERE t.id=$1 AND t.deleted_at IS NULL FOR UPDATE OF t`, taskID).Scan(
 	}
 	if systemKind != "" {
 		return nil, fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, taskID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return nil, fmt.Errorf("%w: task %d", ErrSyntheticAgentCalibrationImmutable, taskID)
 	}
 	if queued {
 		return nil, ErrTaskArchiveQueued
@@ -337,11 +340,11 @@ func (d *DB) QueueTaskArchiveRestore(id int64) (*TaskArchive, error) {
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	var systemKind string
-	err = tx.QueryRow(`SELECT COALESCE(task.system_kind,'')
+	var systemKind, executionPolicy string
+	err = tx.QueryRow(`SELECT COALESCE(task.system_kind,''), COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
 WHERE archive.id=$1 AND archive.state IN ('ready','restore_failed')
-FOR UPDATE OF archive,task`, id).Scan(&systemKind)
+FOR UPDATE OF archive,task`, id).Scan(&systemKind, &executionPolicy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTaskArchiveState
 	}
@@ -350,6 +353,9 @@ FOR UPDATE OF archive,task`, id).Scan(&systemKind)
 	}
 	if systemKind != "" {
 		return nil, fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, id)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return nil, fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, id)
 	}
 	item, err := scanTaskArchive(tx.QueryRow(`UPDATE task_archives
 SET state=$2, phase='queued', progress=0, error='', requested_at=now()
@@ -367,11 +373,11 @@ func (d *DB) QueueTaskArchiveDelete(id int64) (*TaskArchive, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var taskID int64
-	var systemKind string
-	if err := tx.QueryRow(`SELECT archive.task_id,COALESCE(task.system_kind,'')
+	var systemKind, executionPolicy string
+	if err := tx.QueryRow(`SELECT archive.task_id,COALESCE(task.system_kind,''), COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
 WHERE archive.id=$1 AND archive.state IN ('ready','delete_failed')
-FOR UPDATE OF archive,task`, id).Scan(&taskID, &systemKind); err != nil {
+FOR UPDATE OF archive,task`, id).Scan(&taskID, &systemKind, &executionPolicy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskArchiveState
 		}
@@ -379,6 +385,9 @@ FOR UPDATE OF archive,task`, id).Scan(&taskID, &systemKind); err != nil {
 	}
 	if systemKind != "" {
 		return nil, fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, id)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return nil, fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, id)
 	}
 	var dependent int64
 	err = tx.QueryRow(`SELECT task_id FROM task_archives
@@ -402,9 +411,10 @@ WHERE id=$1 RETURNING `+taskArchiveCols, id, DeleteQueued))
 // An interrupted archive requires an explicit retry: automatic startup retries can
 // otherwise form a crash loop when the prior process was killed by resource limits.
 func (d *DB) RecoverTaskArchiveJobs() error {
-	// A system fixture must never resume an interrupted archive operation after
-	// restart. Quarantine both queued and active legacy rows before the normal
-	// recovery pass can make them eligible for the worker again.
+	// A product-owned fixture or execution-policy task must never resume an
+	// interrupted archive operation after restart. Quarantine both queued and
+	// active legacy rows before the normal recovery pass can make them eligible
+	// for the worker again.
 	if _, err := d.Exec(`UPDATE task_archives archive SET
 	 state=CASE
 	   WHEN archive.state IN ('archive_queued','archiving') THEN 'archive_failed'
@@ -413,10 +423,10 @@ func (d *DB) RecoverTaskArchiveJobs() error {
 	   ELSE archive.state
 	 END,
 	 phase='blocked',
-	 error='system task archive operations are prohibited'
+	 error='product-owned task archive operations are prohibited'
 FROM tasks task
 WHERE archive.task_id=task.id
-  AND COALESCE(task.system_kind,'')<>''
+	  AND (COALESCE(task.system_kind,'')<>'' OR COALESCE(task.execution_policy,'')<>'')
   AND archive.state IN ('archive_queued','archiving','restore_queued','restoring','delete_queued','deleting')`); err != nil {
 		return err
 	}
@@ -440,7 +450,7 @@ func (d *DB) ClaimTaskArchiveJob(ctx context.Context) (*TaskArchive, error) {
 	defer tx.Rollback() //nolint:errcheck
 	// A queue row could have been created by an earlier build or by a direct DB
 	// repair. Convert it to a terminal failure instead of leaving it eligible for
-	// a worker that would compact a product-owned system fixture.
+	// a worker that would compact a product-owned fixture or policy task.
 	if _, err := tx.ExecContext(ctx, `UPDATE task_archives archive SET
 	 state=CASE archive.state
 	   WHEN 'archive_queued' THEN 'archive_failed'
@@ -449,10 +459,10 @@ func (d *DB) ClaimTaskArchiveJob(ctx context.Context) (*TaskArchive, error) {
 	   ELSE archive.state
 	 END,
 	 phase='blocked',
-	 error='system task archive operations are prohibited'
+	 error='product-owned task archive operations are prohibited'
 FROM tasks task
 WHERE archive.task_id=task.id
-  AND COALESCE(task.system_kind,'')<>''
+	  AND (COALESCE(task.system_kind,'')<>'' OR COALESCE(task.execution_policy,'')<>'')
   AND archive.state IN ('archive_queued','restore_queued','delete_queued')`); err != nil {
 		return nil, err
 	}
@@ -462,6 +472,7 @@ WHERE archive.task_id=task.id
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
 WHERE archive.state IN ('archive_queued','restore_queued','delete_queued')
   AND COALESCE(task.system_kind,'')=''
+	  AND COALESCE(task.execution_policy,'')=''
 ORDER BY archive.requested_at,archive.id FOR UPDATE OF archive SKIP LOCKED LIMIT 1`).Scan(&id, &queuedState)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The system-task quarantine above is a deliberate state transition, even
@@ -514,20 +525,21 @@ FROM task_archives archive JOIN tasks task ON task.id=archive.task_id WHERE arch
 }
 
 // IsSystemTaskArchive reports whether an archive belongs to a product-owned
-// system task. Archived task stubs retain system_kind, so this also works for
-// restore/delete jobs after the live task has been compacted.
+// immutable task. Archived task stubs retain both system_kind and execution
+// policy, so this also works for restore/delete jobs after a live task has been
+// compacted. The historical name remains for compatibility with archive callers.
 func (d *DB) IsSystemTaskArchive(id int64) (bool, error) {
-	var systemKind string
-	err := d.QueryRow(`SELECT COALESCE(task.system_kind,'')
+	var systemKind, executionPolicy string
+	err := d.QueryRow(`SELECT COALESCE(task.system_kind,''), COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1`, id).Scan(&systemKind)
+WHERE archive.id=$1`, id).Scan(&systemKind, &executionPolicy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrTaskArchiveNotFound
 	}
 	if err != nil {
 		return false, err
 	}
-	return systemKind != "", nil
+	return systemKind != "" || executionPolicy == SyntheticAgentCalibrationExecutionPolicy, nil
 }
 
 func (d *DB) FailTaskArchiveJob(id int64, activeState string, cause error) error {
@@ -670,11 +682,19 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		return nil, err
 	}
 	var expID int64
-	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
+	var systemKind, executionPolicy string
+	if err := tx.QueryRow(`SELECT exploration_id, COALESCE(system_kind,''), COALESCE(execution_policy,'')
+FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID, &systemKind, &executionPolicy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskArchiveNotFound
 		}
 		return nil, err
+	}
+	if systemKind != "" {
+		return nil, fmt.Errorf("%w: task %d", ErrSystemTaskImmutable, taskID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return nil, fmt.Errorf("%w: task %d", ErrSyntheticAgentCalibrationImmutable, taskID)
 	}
 	tables := make(map[string]json.RawMessage)
 	queries := []struct {

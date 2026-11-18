@@ -41,6 +41,12 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
+	// Keep the fixed calibration lane out of this interactive continuation path
+	// before parsing caller-authored text or asking the generic engine to claim
+	// its fixed receipt intent.
+	if !s.requireMutableTask(w, t) {
+		return
+	}
 	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
 	if err != nil || iid <= 0 {
 		writeErr(w, http.StatusBadRequest, "bad intent id")

@@ -169,12 +169,9 @@ FOR UPDATE OF pending`, id).Scan(&taskID)
 	if err != nil {
 		return false, err
 	}
-	_, systemKind, err := interceptPendingTaskSystemKind(tx, taskID)
+	_, err = interceptPendingTaskMutabilityError(tx, taskID)
 	if err != nil {
 		return false, err
-	}
-	if systemKind != "" {
-		return false, fmt.Errorf("%w: intercept %d", ErrSystemTaskImmutable, id)
 	}
 	r, err := tx.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW(), decided_by=$5,
 		audit=CASE WHEN audit IS NULL THEN NULL ELSE audit || $3::jsonb ||
@@ -192,9 +189,12 @@ FOR UPDATE OF pending`, id).Scan(&taskID)
 }
 
 // IsSystemTaskInterceptPending reports whether an approval row belongs to a
-// product-owned system task. A malformed numeric legacy reference is an error
-// rather than a false system result, because global approval endpoints carry
-// only the pending-row ID. Historic opaque labels remain non-task references.
+// product-owned immutable task. Its historical name is retained for callers
+// that only need a read-only classification; a bounded synthetic-agent policy
+// task is also immutable for this purpose. A malformed numeric legacy
+// reference is an error rather than a false system result, because global
+// approval endpoints carry only the pending-row ID. Historic opaque labels
+// remain non-task references.
 func (d *DB) IsSystemTaskInterceptPending(id int64) (bool, error) {
 	var taskID sql.NullString
 	err := d.QueryRow(`SELECT task_id FROM intercept_pending WHERE id=$1`, id).Scan(&taskID)
@@ -204,11 +204,14 @@ func (d *DB) IsSystemTaskInterceptPending(id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, systemKind, err := interceptPendingTaskSystemKind(d, taskID)
-	if err != nil {
-		return false, err
+	_, err = interceptPendingTaskMutabilityError(d, taskID)
+	if err == nil {
+		return false, nil
 	}
-	return systemKind != "", nil
+	if errors.Is(err, ErrSystemTaskImmutable) || errors.Is(err, ErrSyntheticAgentCalibrationImmutable) {
+		return true, nil
+	}
+	return false, err
 }
 
 // CompleteIntercept only updates the exact recorded call after it was allowed.

@@ -118,7 +118,15 @@ func (e *Engine) stampFirstRun(t *Task) {
 	if _, loaded := e.stamped.LoadOrStore(t.ID, true); loaded {
 		return
 	}
-	dl, err := e.m.StampTaskFirstRun(t.ID)
+	var (
+		dl  int64
+		err error
+	)
+	if t.IsSyntheticAgentCalibration() {
+		dl, err = e.m.StampSyntheticAgentCalibrationFirstRun(t.ID)
+	} else {
+		dl, err = e.m.StampTaskFirstRun(t.ID)
+	}
 	if err != nil {
 		log.Printf("[deadline] task %s failed to stamp first_run: %v", t.ID, err)
 		e.stamped.Delete(t.ID) // allow the next attempt to retry

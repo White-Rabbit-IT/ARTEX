@@ -68,6 +68,14 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad finding id")
 		return
 	}
+	f, findingErr := pg.GetFinding(id)
+	// A retest launches a separate provider-backed conversation. Resolve the
+	// owner before parsing caller notes or consulting agent/provider state so a
+	// stale global finding id cannot become an alternate entry point for the
+	// bounded synthetic calibration task.
+	if findingErr == nil && f != nil && !s.requireMutableFindingOwner(w, f) {
+		return
+	}
 	var req struct {
 		Notes string `json:"notes"`
 	}
@@ -79,9 +87,10 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "retest notes are limited to 4000 characters")
 		return
 	}
-	f, err := pg.GetFinding(id)
-	if err != nil {
-		writeErr(w, 500, err.Error())
+	// Keep the historical validation order for ordinary/missing findings while
+	// still rejecting product-owned owners before the body was decoded.
+	if findingErr != nil {
+		writeErr(w, 500, findingErr.Error())
 		return
 	}
 	if f == nil {

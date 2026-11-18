@@ -140,7 +140,11 @@ func TestHermesObserverTaskCreatedAndBoundedPendingEvictsOldest(t *testing.T) {
 	o.emitActivity(&Task{ID: "17", ExpID: 31}, db.Activity{ID: 1, Kind: "result", Summary: "private", CreatedAt: now.Add(time.Nanosecond)})
 	o.emitActivity(&Task{ID: "17", ExpID: 31}, db.Activity{ID: 2, Kind: "result", Summary: "must not leak", CreatedAt: now.Add(2 * time.Nanosecond)})
 
-	entries := waitForHermesReceiptCount(t, o.pendingPath, 2)
+	// The observer publishes asynchronously. A count of two alone is a valid
+	// transient state after the first activity is written but before the second
+	// activity performs the eviction. Wait for the promised retained receipts,
+	// not merely the intermediate bounded count.
+	entries := waitForHermesActivityReceiptIDs(t, o.pendingPath, "1", "2")
 	if len(entries) != 2 {
 		t.Fatalf("outbox must be bounded at two pending receipts, got %d", len(entries))
 	}
@@ -299,6 +303,66 @@ func waitForHermesReceiptCount(t *testing.T, dir string, want int) []os.DirEntry
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("want exactly %d published receipt(s), got %d (directory entries=%d)", want, len(receipts), len(entries))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitForHermesActivityReceiptIDs waits for the final bounded-outbox contract
+// rather than a count that can be true while the single observer writer is
+// still processing a later queued event. It is test-only; production eviction
+// remains asynchronous and intentionally lossy.
+func waitForHermesActivityReceiptIDs(t *testing.T, dir string, wantIDs ...string) []os.DirEntry {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts := make([]os.DirEntry, 0, len(entries))
+		seen := make(map[string]bool, len(wantIDs))
+		allActivity := true
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, "event-") || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			blob, err := os.ReadFile(filepath.Join(dir, name))
+			if os.IsNotExist(err) {
+				allActivity = false
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var receipt hermesObserverReceipt
+			if err := json.Unmarshal(blob, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if receipt.Kind != "activity.persisted" {
+				allActivity = false
+				continue
+			}
+			for _, id := range wantIDs {
+				if strings.Contains(receipt.Message, "activity_id="+id) {
+					seen[id] = true
+				}
+			}
+			receipts = append(receipts, entry)
+		}
+		if allActivity && len(receipts) == len(wantIDs) && len(seen) == len(wantIDs) {
+			return receipts
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("want final activity receipts %v, got %d receipt(s) with ids=%v (directory entries=%d)", wantIDs, len(receipts), seen, len(entries))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

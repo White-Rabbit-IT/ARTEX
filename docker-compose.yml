@@ -39,6 +39,10 @@ services:
       # a profile connection test is allowed, but task/chat agents need an
       # explicit, separately reviewed enablement.
       ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION: ${ARTEX_HERMES_SUBSCRIPTION_ALLOW_AGENT_EXECUTION:-}
+      # Narrower than the normal Hermes agent opt-in: this enables only the
+      # product-owned synthetic-agent calibration. It never enables a normal
+      # task, chat, target, or tool-capable agent.
+      ARTEX_HERMES_SYNTHETIC_CALIBRATION_ALLOW: ${ARTEX_HERMES_SYNTHETIC_CALIBRATION_ALLOW:-}
       # Metadata-only Hermes observer. ARTEX never invokes Hermes or reads its
       # credentials. It remains disabled unless the optional, pre-provisioned
       # observer mount in docker-compose.hermes-observer.yml is selected.

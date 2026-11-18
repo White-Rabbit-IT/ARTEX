@@ -26,7 +26,7 @@ type goalSpec struct {
 //
 // Asynchronous (goroutine) so the caller returns immediately; both paths behave the same: the task exists in seconds and goals decompose in the background.
 func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
-	if t == nil || t.IsSyntheticCalibration() {
+	if t == nil || t.IsSyntheticCalibration() || t.IsSyntheticAgentCalibration() {
 		return
 	}
 	if !s.engine.beginTaskOperation(t.ID) {
@@ -47,7 +47,7 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 }
 
 func (s *Server) startTaskEngine(t *Task) {
-	if t == nil || t.IsSyntheticCalibration() {
+	if t == nil || t.IsSyntheticCalibration() || t.IsSyntheticAgentCalibration() {
 		return
 	}
 	ctx := s.engine.execContextFor(s.ctx, t.ID)
@@ -76,7 +76,10 @@ func (s *Server) startTaskEngine(t *Task) {
 }
 
 func (s *Server) occupiesConcurrencySlot(t *Task) bool {
-	if t == nil {
+	// Product-owned calibration lanes have their own admission/runtime path. In
+	// particular, the runnable synthetic receipt must neither reserve an
+	// ordinary-task slot nor be considered for FIFO reconciliation.
+	if t == nil || t.IsSyntheticCalibration() || t.IsSyntheticAgentCalibration() {
 		return false
 	}
 	lifecycle := t.lifecycleSnapshot()
@@ -123,6 +126,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	}
 	if t.IsSyntheticCalibration() {
 		return false, ErrSystemTaskImmutable
+	}
+	if t.IsSyntheticAgentCalibration() {
+		return false, db.ErrSyntheticAgentCalibrationImmutable
 	}
 	if mode != "bootstrap" {
 		mode = "resume"
@@ -233,6 +239,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 
 func (s *Server) hasReadyQueuedTask(excludeID string) bool {
 	for _, task := range s.m.List() {
+		if task.IsSyntheticCalibration() || task.IsSyntheticAgentCalibration() {
+			continue
+		}
 		lifecycle := task.lifecycleSnapshot()
 		if task.ID != excludeID && lifecycle.Queued && !lifecycle.Paused && !isTerminalStatus(lifecycle.Status) && s.engine.ReadyFor(task) {
 			return true
@@ -277,6 +286,9 @@ func (s *Server) reconcileConcurrency() {
 	// later profile edit/recovery can re-enter through the same FIFO path.
 	if enabled {
 		for _, task := range s.m.List() {
+			if task.IsSyntheticCalibration() || task.IsSyntheticAgentCalibration() {
+				continue
+			}
 			lifecycle := task.lifecycleSnapshot()
 			if lifecycle.Queued || lifecycle.Paused || s.engine.IsPaused(task.ID) || s.engine.IsDeleting(task.ID) ||
 				isTerminalStatus(lifecycle.Status) || s.engine.ReadyFor(task) || s.engine.ActiveLLMCalls(task.ID) > 0 {
@@ -301,6 +313,9 @@ func (s *Server) reconcileConcurrency() {
 	}
 	queued := []queuedTask{}
 	for _, task := range s.m.List() {
+		if task.IsSyntheticCalibration() || task.IsSyntheticAgentCalibration() {
+			continue
+		}
 		lifecycle := task.lifecycleSnapshot()
 		if lifecycle.Queued && !isTerminalStatus(lifecycle.Status) {
 			queued = append(queued, queuedTask{task: task, lifecycle: lifecycle})

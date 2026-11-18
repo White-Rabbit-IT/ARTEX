@@ -461,6 +461,13 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // planner looks first at the actual change (which intent, its output/finding).
 // hooks (the task's target-only Guard) sees every tool call; may be nil.
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, hooks harness.HookRunner, emit func(db.Activity)) (met bool, reason string, err error) {
+	// The synthetic calibration policy has one purpose: a static worker receipt.
+	// Fail closed before compaction, graph reads, prompt construction, or any
+	// provider-facing state can observe task-controlled data if it is ever
+	// misrouted through the generic planner entry point.
+	if IsSyntheticAgentCalibration(ctx) {
+		return false, syntheticPlannerUnavailableReason, nil
+	}
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -484,6 +491,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, plannerToolQuery(goal, triggers)), "planner", base)
 	defer cleanup()
+	// Finalise after WebFetch, which is normally injected late. Synthetic runs
+	// receive no planner tools and no deferred/unlock metadata.
+	tools, def = FinaliseTools(ctx, "planner", withWebFetch(ctx, tools, p.proxyAddr, p.proxyCACert), def)
+	syntheticCalibration := IsSyntheticAgentCalibration(ctx)
 	// The key situation (just-finished intents + the pre-fetched full graph) goes into
 	// [this round's user input] (see input below); the system prompt keeps only the
 	// static planning body. Moving it out keeps the system prompt stable across rounds,
@@ -530,13 +541,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		Provider:        p.prov,
 		SystemPrompt:    system,
 		DynamicBoundary: boundary,
-		Tools:           withWebFetch(ctx, tools, p.proxyAddr, p.proxyCACert), // WebFetch: route through the recording proxy for traceability; load the proxy CA to verify MITM-re-signed HTTPS certs; every redirect hop is gated
+		Tools:           tools, // FinaliseTools above retains normal WebFetch behavior and removes it for synthetic calibration.
 		DeferredTools:   def.Deferred,
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		// Web search (optional). ddgs needs no key; brave-free needs BraveKey; tavily needs TavilyKey.
 		// WebSearchProxy is a dedicated egress proxy (http/https/socks5), unrelated to the traffic-recording MITM proxy; empty = direct.
-		EnableWebSearch:       p.webSearch.Enabled,
+		EnableWebSearch:       p.webSearch.Enabled && !syntheticCalibration,
 		WebSearchBackend:      p.webSearch.Backend,
 		BraveSearchAPIKey:     p.webSearch.BraveKey,
 		TavilySearchAPIKey:    p.webSearch.TavilyKey,
@@ -544,8 +555,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey:  p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   p.webSearch.DeepSeekModel,
 		WebSearchProxy:        p.webSearch.Proxy,
-		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy + trust its CA by default
-		WorkingDir:            taskDir,                              // this task's work dir <workDir>/tasks/<taskID>
+		BashEnv:               syntheticBashEnv(syntheticCalibration, p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy + trust its CA by default
+		WorkingDir:            taskDir,                                                            // this task's work dir <workDir>/tasks/<taskID>
 		ToolOutputDir:         cmdOutDir(taskDir),
 		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)
 		MaxDuration:           maxDur,     // 0=unlimited; with a deadline = time remaining until it
@@ -563,6 +574,11 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 
 		// On by default; ARTEX_UNTRUSTED_BOUNDARY=0 opts out: nonce-frame tool output as untrusted data.
 		UntrustedOutputBoundary: untrustedBoundaryEnabled(),
+	}
+	// agentcore exposes TodoWrite when a TodoStore is present. A synthetic
+	// planner is toolless, so clear that implicit capability as well.
+	if syntheticCalibration {
+		opts.Todos = nil
 	}
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks

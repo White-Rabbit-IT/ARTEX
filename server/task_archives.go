@@ -136,6 +136,9 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if task.IsSyntheticCalibration() {
 		return fmt.Errorf("%w: task %d", pgdb.ErrSystemTaskImmutable, job.TaskID)
 	}
+	if task.IsSyntheticAgentCalibration() {
+		return fmt.Errorf("%w: task %d", pgdb.ErrSyntheticAgentCalibrationImmutable, job.TaskID)
+	}
 
 	taskID := strconv.FormatInt(job.TaskID, 10)
 	if !s.beginTaskDelete(taskID) {
@@ -496,6 +499,9 @@ func (s *Server) queueTaskArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	numeric, _ := strconv.ParseInt(id, 10, 64)
+	if !s.requireMutableTaskID(w, numeric) {
+		return
+	}
 	item, err := s.m.pg.QueueTaskArchive(numeric)
 	if err != nil {
 		writeArchiveError(w, err)
@@ -753,6 +759,9 @@ func writeArchiveError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	} else if errors.Is(err, pgdb.ErrSystemTaskImmutable) {
 		writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
+		return
+	} else if errors.Is(err, pgdb.ErrSyntheticAgentCalibrationImmutable) {
+		writeErr(w, http.StatusConflict, syntheticAgentCalibrationImmutableMessage)
 		return
 	} else if !errors.Is(err, pgdb.ErrTaskArchiveIneligible) &&
 		!errors.Is(err, pgdb.ErrTaskArchiveQueued) &&

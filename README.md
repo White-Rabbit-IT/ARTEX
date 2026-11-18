@@ -356,6 +356,11 @@ proxy. The guide also documents the separate, host-owner-reviewed literal-bridge
 for a multi-bridge host. Then start with its synthetic connection calibration and read [the Hermes
 profile guide](guides/hermes-subscription-proxy.md) before any explicit agent-execution opt-in.
 
+To qualify only the saved Hermes route and ARTEX's fixed worker lifecycle, use **Tasks → Synthetic
+agent calibration** after the separate narrow enablement described in [the synthetic-agent calibration
+guide](guides/synthetic-agent-calibration.md). It is not a normal agent opt-in and cannot take a target,
+prompt, source, credential, tool, proxy, or private-research input.
+
 For a separate, metadata-only ARTEX activity feed in a Hermes bot channel, see
 [the Hermes observer guide](guides/hermes-observer.md). The container writes local redacted receipts;
 under its documented trusted-producer boundary, the host-side sender uses the ordinary Hermes CLI

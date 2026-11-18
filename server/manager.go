@@ -71,15 +71,18 @@ type Task struct {
 	// systemKind is a server-internal classification for records ARTEX owns as
 	// fixed product fixtures rather than operator-created engagements. It must
 	// never be writable through an API payload.
-	systemKind  string
-	FirstRunAt  int64                  `json:"first_run_at,omitempty"`
-	DeadlineAt  int64                  `json:"deadline_at,omitempty"`
-	Store       *pgdb.ExplorationStore `json:"-"`
-	Guard       *guard.Guard           `json:"-"`
-	TargetGuard *guard.Guard           `json:"-"` // planner and main-agent hooks: target gate only
-	notify      chan struct{}
-	lifecycleMu sync.RWMutex
-	llmMu       sync.RWMutex
+	systemKind string
+	// executionPolicy is a server-internal, persisted capability contract. It
+	// is not writable through ordinary task-create or task-update payloads.
+	executionPolicy string
+	FirstRunAt      int64                  `json:"first_run_at,omitempty"`
+	DeadlineAt      int64                  `json:"deadline_at,omitempty"`
+	Store           *pgdb.ExplorationStore `json:"-"`
+	Guard           *guard.Guard           `json:"-"`
+	TargetGuard     *guard.Guard           `json:"-"` // planner and main-agent hooks: target gate only
+	notify          chan struct{}
+	lifecycleMu     sync.RWMutex
+	llmMu           sync.RWMutex
 	// targetGate is the task's opt-in to the approval gate for asset targets.
 	// Atomic: it is switched through the API while tool calls read it.
 	targetGate  atomic.Bool
@@ -96,6 +99,13 @@ type Task struct {
 // system fixture. Such a task is viewable but neither mutable nor executable.
 func (t *Task) IsSyntheticCalibration() bool {
 	return t != nil && t.systemKind == pgdb.SyntheticCalibrationSystemKind
+}
+
+// IsSyntheticAgentCalibration reports whether this is ARTEX's fixed,
+// product-owned, runnable synthetic calibration lane. Unlike CAL-00 it is not
+// a system kind: its narrowly scoped runtime policy is stored separately.
+func (t *Task) IsSyntheticAgentCalibration() bool {
+	return t != nil && t.executionPolicy == pgdb.SyntheticAgentCalibrationExecutionPolicy
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task
@@ -919,6 +929,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		PlanQuietMode:   pt.PlanQuietMode,
 		CoverageEnabled: pt.CoverageEnabled,
 		systemKind:      pt.SystemKind,
+		executionPolicy: pt.ExecutionPolicy,
 		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic), TargetGuard: guard.NewTargetOnly(ic), notify: make(chan struct{}, 1),
 		interceptor: ic,
@@ -1081,6 +1092,206 @@ func (m *Manager) EnsureSyntheticCalibrationTask() (*Task, bool, error) {
 		m.active = t.ID
 	}
 	return t, result.AlreadyPresent, nil
+}
+
+// EnsureSyntheticAgentCalibrationTask registers ARTEX's one bounded runnable
+// synthetic-agent calibration. The database helper accepts only the selected
+// reviewed profile identity; the task's text, one fixed intent, target gate,
+// runtime policy and limits are product-owned. Ordinary task admission never
+// uses this method.
+func (m *Manager) EnsureSyntheticAgentCalibrationTask(llmProfileID int64) (*Task, bool, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+
+	result, err := m.pg.EnsureSyntheticAgentCalibrationTask(llmProfileID)
+	if err != nil {
+		return nil, false, err
+	}
+	if result == nil || result.Task == nil {
+		return nil, false, errors.New("synthetic agent calibration database helper returned no task")
+	}
+
+	id := strconv.FormatInt(result.Task.ID, 10)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.tasks[id]; existing != nil {
+		return existing, result.AlreadyPresent, nil
+	}
+	t := m.taskFromPG(result.Task)
+	m.tasks[t.ID] = t
+	if m.active == "" {
+		m.active = t.ID
+	}
+	return t, result.AlreadyPresent, nil
+}
+
+// syntheticAgentCalibrationRun is the in-memory form of the database-owned
+// fixed-intent lease. ClaimToken stays inside the engine call path; it is never
+// exposed through a DTO, activity, log, or API response.
+type syntheticAgentCalibrationRun struct {
+	Task       *Task
+	IntentID   int64
+	ClaimToken string
+	Attempt    int
+	Retried    bool
+	Started    bool
+}
+
+// syncSyntheticAgentCalibrationTask mirrors a committed policy lifecycle
+// transition without replacing the existing task handle/store. The policy's
+// immutable configuration is validated in PostgreSQL; only its lifecycle fields
+// may change here.
+func (m *Manager) syncSyntheticAgentCalibrationTask(pt *pgdb.Task) (*Task, error) {
+	if pt == nil || !pt.IsSyntheticAgentCalibration() {
+		return nil, pgdb.ErrSyntheticAgentCalibrationImmutable
+	}
+	id := strconv.FormatInt(pt.ID, 10)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t := m.tasks[id]; t != nil {
+		if !t.IsSyntheticAgentCalibration() {
+			return nil, pgdb.ErrSyntheticAgentCalibrationImmutable
+		}
+		t.updateLifecycle(func(state *taskLifecycleState) {
+			state.Status = pt.Status
+			state.Paused = pt.Paused
+			state.Queued = pt.Queued
+			state.QueuedAt = unixNanoOrZero(pt.QueuedAt)
+			state.QueueMode = pt.QueueMode
+			state.CompletedAt = unixOrZero(pt.CompletedAt)
+			state.FirstRunAt = unixOrZero(pt.FirstRunAt)
+			state.DeadlineAt = unixOrZero(pt.DeadlineAt)
+		})
+		t.targetGate.Store(m.effectiveTargetGate(pt.TargetGate))
+		return t, nil
+	}
+	t := m.taskFromPG(pt)
+	m.tasks[t.ID] = t
+	if m.active == "" {
+		m.active = t.ID
+	}
+	return t, nil
+}
+
+// PrepareSyntheticAgentCalibrationRun is the sole manager admission path for
+// a provider-backed synthetic calibration. Repeated start clicks observe a
+// running/terminal task; only the dedicated retry action may reset a failed
+// attempt, and the database atomically claims the exact fixed intent.
+func (m *Manager) PrepareSyntheticAgentCalibrationRun(id string, profileID int64, allowRetry bool) (*syntheticAgentCalibrationRun, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("invalid task id %q", id)
+	}
+	run, err := m.pg.PrepareSyntheticAgentCalibrationRun(n, profileID, allowRetry)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || run.Task == nil {
+		return nil, errors.New("synthetic agent calibration preparation returned no task")
+	}
+	t, err := m.syncSyntheticAgentCalibrationTask(run.Task)
+	if err != nil {
+		return nil, err
+	}
+	return &syntheticAgentCalibrationRun{
+		Task:       t,
+		IntentID:   run.IntentID,
+		ClaimToken: run.ClaimToken,
+		Attempt:    run.Attempt,
+		Retried:    run.Retried,
+		Started:    run.Started,
+	}, nil
+}
+
+// FinishSyntheticAgentCalibration records the first terminal outcome of the
+// currently leased attempt. won=false is a harmless stale-run result; callers
+// must not append a second terminal receipt in that case.
+func (m *Manager) FinishSyntheticAgentCalibration(id, status string, receiptCalls, modelCalls uint32) (won bool, task *Task, err error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return false, nil, fmt.Errorf("invalid task id %q", id)
+	}
+	won, err = m.pg.FinishSyntheticAgentCalibration(n, status, receiptCalls, modelCalls)
+	if err != nil {
+		return false, nil, err
+	}
+	stored, err := m.pg.GetTask(n)
+	if err != nil {
+		return false, nil, err
+	}
+	task, err = m.syncSyntheticAgentCalibrationTask(stored)
+	return won, task, err
+}
+
+// AbortPreparedSyntheticAgentCalibration is the fenced failure path for a
+// database-admitted synthetic attempt that cannot safely enter or complete its
+// local worker routine.  The database helper accepts the exact prepared intent
+// identity and claim token, then atomically settles the policy task and receipt
+// intent.  It never reopens a generic execution path.
+func (m *Manager) AbortPreparedSyntheticAgentCalibration(id string, intentID int64, claimToken string) (won bool, task *Task, err error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return false, nil, fmt.Errorf("invalid task id %q", id)
+	}
+	won, err = m.pg.AbortPreparedSyntheticAgentCalibration(n, intentID, claimToken)
+	if err != nil {
+		return false, nil, err
+	}
+	stored, err := m.pg.GetTask(n)
+	if err != nil {
+		return false, nil, err
+	}
+	task, err = m.syncSyntheticAgentCalibrationTask(stored)
+	return won, task, err
+}
+
+// MarkSyntheticAgentCalibrationInterrupted is restart-only recovery. It marks
+// the task failed and writes an interruption receipt but never resumes or
+// releases a provider-backed lease.
+func (m *Manager) MarkSyntheticAgentCalibrationInterrupted(id string) (bool, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return false, fmt.Errorf("invalid task id %q", id)
+	}
+	won, err := m.pg.MarkSyntheticAgentCalibrationInterrupted(n)
+	if err != nil {
+		return false, err
+	}
+	stored, err := m.pg.GetTask(n)
+	if err != nil {
+		return false, err
+	}
+	_, err = m.syncSyntheticAgentCalibrationTask(stored)
+	return won, err
+}
+
+// SyntheticAgentCalibrationIntentID returns the one fixed receipt intent after
+// the database has revalidated the policy task's closed graph.  The dedicated
+// engine must use this instead of the ordinary frontier selector, which is
+// intentionally allowed to choose any open intent on a normal task.
+func (m *Manager) SyntheticAgentCalibrationIntentID(id string) (int64, error) {
+	if m == nil || m.pg == nil {
+		return 0, pgdb.ErrSyntheticAgentCalibrationImmutable
+	}
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid task id %q", id)
+	}
+	m.mu.RLock()
+	task := m.tasks[id]
+	m.mu.RUnlock()
+	if task == nil || !task.IsSyntheticAgentCalibration() {
+		return 0, pgdb.ErrSyntheticAgentCalibrationImmutable
+	}
+	return m.pg.SyntheticAgentCalibrationIntentID(n)
 }
 
 // RenameTaskCategory persists a category name and refreshes every live task DTO
@@ -1593,6 +1804,48 @@ func (m *Manager) StampTaskFirstRun(id string) (int64, error) {
 	return dlUnix, nil
 }
 
+// StampSyntheticAgentCalibrationFirstRun is the narrow lifecycle counterpart
+// of StampTaskFirstRun.  The generic method deliberately rejects product-owned
+// policy tasks; the dedicated engine alone may stamp this fixed task's timeout
+// clock before its one Worker receipt run.
+func (m *Manager) StampSyntheticAgentCalibrationFirstRun(id string) (int64, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid task id %q", id)
+	}
+	m.mu.RLock()
+	task := m.tasks[id]
+	timeout := 0
+	if task != nil && task.IsSyntheticAgentCalibration() {
+		timeout = task.TimeoutSeconds
+	}
+	m.mu.RUnlock()
+	if task == nil || !task.IsSyntheticAgentCalibration() {
+		return 0, pgdb.ErrSyntheticAgentCalibrationImmutable
+	}
+	dl, err := m.pg.StampFirstRun(n, timeout)
+	if err != nil {
+		return 0, err
+	}
+	var dlUnix int64
+	if dl != nil {
+		dlUnix = dl.Unix()
+	}
+	m.mu.Lock()
+	if current := m.tasks[id]; current != nil && current.IsSyntheticAgentCalibration() {
+		current.updateLifecycle(func(state *taskLifecycleState) {
+			if state.FirstRunAt == 0 {
+				state.FirstRunAt = time.Now().Unix()
+			}
+			state.DeadlineAt = dlUnix
+		})
+	}
+	m.mu.Unlock()
+	return dlUnix, nil
+}
+
 // SetTaskStatusGuarded sets a TERMINAL status only if the task isn't already terminal
 // (resolves the completed↔timeout race — first terminal writer wins). Reflects the
 // won status on the live handle. won=false means another terminal already stuck.
@@ -1945,6 +2198,9 @@ func (m *Manager) requireMutableTask(id string) error {
 		if task.IsSyntheticCalibration() {
 			return ErrSystemTaskImmutable
 		}
+		if task.IsSyntheticAgentCalibration() {
+			return pgdb.ErrSyntheticAgentCalibrationImmutable
+		}
 		return nil
 	}
 	numericID, err := strconv.ParseInt(id, 10, 64)
@@ -1957,6 +2213,9 @@ func (m *Manager) requireMutableTask(id string) error {
 	}
 	if stored != nil && stored.IsSyntheticCalibration() {
 		return ErrSystemTaskImmutable
+	}
+	if stored != nil && stored.IsSyntheticAgentCalibration() {
+		return pgdb.ErrSyntheticAgentCalibrationImmutable
 	}
 	return nil
 }

@@ -41,14 +41,17 @@ func (d *DB) CompleteTaskArchive(
 		return err
 	}
 	var taskID, expID int64
-	var state, systemKind string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
+	var state, systemKind, executionPolicy string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,''),COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind, &executionPolicy); err != nil {
 		return err
 	}
 	if systemKind != "" {
 		return fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, archiveID)
 	}
 	if state != Archiving || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return fmt.Errorf("%w: archive snapshot identity/state mismatch", ErrTaskArchiveState)
@@ -188,14 +191,17 @@ func (d *DB) restoreTaskArchive(
 		return nil, err
 	}
 	var taskID, expID int64
-	var state, systemKind string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
+	var state, systemKind, executionPolicy string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,''),COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind, &executionPolicy); err != nil {
 		return nil, err
 	}
 	if systemKind != "" {
 		return nil, fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return nil, fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, archiveID)
 	}
 	if state != Restoring || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return nil, fmt.Errorf("%w: restore snapshot identity/state mismatch", ErrTaskArchiveState)
@@ -739,8 +745,29 @@ func nilIfEmptyString(value string) any {
 // CompleteTaskArchiveRestore removes compact metadata after every external
 // component has been verified and the package has been consumed.
 func (d *DB) CompleteTaskArchiveRestore(archiveID int64) error {
-	res, err := d.Exec(`DELETE FROM task_archives archive USING tasks task
-WHERE archive.id=$1 AND archive.task_id=task.id AND task.deleted_at IS NULL AND task.archived_at IS NULL`, archiveID)
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var systemKind, executionPolicy string
+	err = tx.QueryRow(`SELECT COALESCE(task.system_kind,''), COALESCE(task.execution_policy,'')
+FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
+WHERE archive.id=$1 AND task.deleted_at IS NULL AND task.archived_at IS NULL
+FOR UPDATE OF archive,task`, archiveID).Scan(&systemKind, &executionPolicy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTaskArchiveState
+	}
+	if err != nil {
+		return err
+	}
+	if systemKind != "" {
+		return fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, archiveID)
+	}
+	res, err := tx.Exec(`DELETE FROM task_archives WHERE id=$1`, archiveID)
 	if err != nil {
 		return err
 	}
@@ -748,7 +775,7 @@ WHERE archive.id=$1 AND archive.task_id=task.id AND task.deleted_at IS NULL AND 
 	if n != 1 {
 		return ErrTaskArchiveState
 	}
-	return nil
+	return tx.Commit()
 }
 
 // DeleteTaskArchiveStub permanently removes the cold task after its package has
@@ -763,14 +790,17 @@ func (d *DB) DeleteTaskArchiveStub(archiveID int64) error {
 		return err
 	}
 	var taskID, expID int64
-	var state, systemKind string
-	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,'')
+	var state, systemKind, executionPolicy string
+	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state,COALESCE(task.system_kind,''),COALESCE(task.execution_policy,'')
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind); err != nil {
+WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID, &state, &systemKind, &executionPolicy); err != nil {
 		return err
 	}
 	if systemKind != "" {
 		return fmt.Errorf("%w: archive %d", ErrSystemTaskImmutable, archiveID)
+	}
+	if executionPolicy == SyntheticAgentCalibrationExecutionPolicy {
+		return fmt.Errorf("%w: archive %d", ErrSyntheticAgentCalibrationImmutable, archiveID)
 	}
 	if state != Deleting {
 		return ErrTaskArchiveState

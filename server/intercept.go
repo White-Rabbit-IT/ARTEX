@@ -411,6 +411,10 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 	// On a target request "allowed" pins the addresses the request displayed.
 	// Every human decision records who took it and from where.
 	if err := s.m.interceptor.Decide(id, req.Decision == "allowed", s.approver(r), clientIP(r, s.trustedProxies)); err != nil {
+		if errors.Is(err, db.ErrSyntheticAgentCalibrationImmutable) {
+			writeErr(w, http.StatusConflict, syntheticAgentCalibrationImmutableMessage)
+			return
+		}
 		if errors.Is(err, db.ErrSystemTaskImmutable) {
 			writeErr(w, http.StatusConflict, syntheticCalibrationImmutableMessage)
 			return

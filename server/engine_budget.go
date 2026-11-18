@@ -14,6 +14,16 @@ import (
 // budgetFor returns the task's budget ledger, created on first use from the env;
 // nil when no budget is configured (passthrough).
 func (e *Engine) budgetFor(taskID string) *agent.BudgetLedger {
+	if e != nil && e.m != nil {
+		if task, ok := e.m.Task(taskID); ok && task.IsSyntheticAgentCalibration() {
+			// The synthetic lane has a single worker and enforces its own fixed
+			// two-turn/output caps.  The normal hierarchical ledger reserves a
+			// 20k-token minimum wrap-up margin, which would make its intentionally
+			// smaller fixed receipt exchange impossible.  Do not inherit mutable
+			// process-wide ARTEX_* budget variables here.
+			return nil
+		}
+	}
 	if v, ok := e.budgets.Load(taskID); ok {
 		return v.(*agent.BudgetLedger)
 	}
