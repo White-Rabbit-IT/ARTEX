@@ -55,7 +55,15 @@ case "$1" in
     format="$3"
     case "$format" in
       '{{.Driver}}') printf 'bridge\n' ;;
-      *bridge.name*) printf 'br-37a981071ae8\n' ;;
+      '{{.Id}}') printf '%s\n' "${FAKE_NETWORK_ID:-37a981071ae89cc0bc84f48fbe0c232b723d996539b96334d6c4646c72006c75}" ;;
+      *bridge.name*)
+        case "${FIXTURE_BRIDGE_OPTION:-explicit}" in
+          explicit) printf 'br-37a981071ae8\n' ;;
+          absent) printf '<no value>\n' ;;
+          empty) printf '\n' ;;
+          *) printf '%s\n' "${FIXTURE_BRIDGE_OPTION}" ;;
+        esac
+        ;;
       *Containers*)
         if [[ "${FIXTURE_FOREIGN:-0}" == 1 ]]; then
           printf 'artex-id\nforeign-id\n'
@@ -73,14 +81,15 @@ EOF
 cat >"$FAKE_BIN/ip" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+bridge_iface="${FAKE_BRIDGE_IFACE:-br-37a981071ae8}"
 case "$*" in
-  'link show dev br-37a981071ae8')
+  "link show dev $bridge_iface")
     ;;
-  '-4 -o addr show dev br-37a981071ae8')
+  "-4 -o addr show dev $bridge_iface")
     if [[ "${FIXTURE_GATEWAY_ASSIGNED:-1}" == 1 ]]; then
-      printf '8: br-37a981071ae8    inet 172.18.0.1/16 brd 172.18.255.255 scope global br-37a981071ae8\n'
+      printf '8: %s    inet 172.18.0.1/16 brd 172.18.255.255 scope global %s\n' "$bridge_iface" "$bridge_iface"
     else
-      printf '8: br-37a981071ae8    inet 172.18.0.2/16 brd 172.18.255.255 scope global br-37a981071ae8\n'
+      printf '8: %s    inet 172.18.0.2/16 brd 172.18.255.255 scope global %s\n' "$bridge_iface" "$bridge_iface"
     fi
     ;;
   *)
@@ -342,6 +351,25 @@ plan_output="$(run_helper --project artex 2>&1)"
 [[ "$plan_output" == *'result=PLAN_ONLY'* ]] || fail 'helper did not default to plan-only'
 [[ "$plan_output" != *'artex-id'* && "$plan_output" != *'postgres-id'* ]] || fail 'helper leaked container identifiers'
 [[ ! -e "$TEST_DIR/runtime" ]] || fail 'plan mode created a route directory'
+
+default_bridge_output="$(FIXTURE_BRIDGE_OPTION=absent run_helper --project artex 2>&1)"
+[[ "$default_bridge_output" == *'artex_bridge_interface=br-37a981071ae8'* ]] || fail 'default Compose bridge was not derived from Docker network ID'
+[[ "$default_bridge_output" == *'result=PLAN_ONLY'* ]] || fail 'default Compose bridge did not stay plan-only'
+
+empty_option_output="$(FIXTURE_BRIDGE_OPTION=empty run_helper --project artex 2>&1)"
+[[ "$empty_option_output" == *'artex_bridge_interface=br-37a981071ae8'* ]] || fail 'empty Compose bridge option was not derived from Docker network ID'
+
+explicit_custom_bridge_output="$(FIXTURE_BRIDGE_OPTION=br-artex FAKE_BRIDGE_IFACE=br-artex run_helper --project artex 2>&1)"
+[[ "$explicit_custom_bridge_output" == *'artex_bridge_interface=br-artex'* ]] || fail 'explicit custom Docker bridge was not retained'
+[[ "$explicit_custom_bridge_output" == *'result=PLAN_ONLY'* ]] || fail 'explicit custom Docker bridge did not stay plan-only'
+
+set +e
+malformed_network_id_output="$(FIXTURE_BRIDGE_OPTION=absent FAKE_NETWORK_ID=not-a-docker-id run_helper --project artex 2>&1)"
+malformed_network_id_status=$?
+set -e
+(( malformed_network_id_status != 0 )) || fail 'malformed Docker network ID was accepted for bridge derivation'
+[[ "$malformed_network_id_output" == *'network ID is not a canonical Docker ID'* ]] || fail 'malformed Docker network ID did not explain refusal'
+[[ ! -e "$TEST_DIR/runtime" ]] || fail 'malformed Docker network ID created a route directory'
 
 set +e
 gateway_output="$(FIXTURE_GATEWAY_ASSIGNED=0 run_helper --project artex 2>&1)"

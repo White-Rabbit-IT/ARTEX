@@ -540,8 +540,26 @@ is_private_ipv4 "$GATEWAY" || die 'ARTEX bridge gateway is not private IPv4'
 
 driver="$("$DOCKER_BIN" network inspect -f '{{.Driver}}' "$NETWORK" 2>/dev/null)" || die 'could not inspect ARTEX network driver'
 [[ "$driver" == 'bridge' ]] || die 'ARTEX network must use Docker bridge driver'
-BRIDGE_IFACE="$("$DOCKER_BIN" network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$NETWORK" 2>/dev/null)" || die 'could not inspect ARTEX bridge interface'
-[[ "$BRIDGE_IFACE" =~ ^br-[A-Za-z0-9]+$ ]] || die 'ARTEX bridge interface is not a user-defined bridge name'
+# A normal Compose-created user-defined bridge often does not populate
+# com.docker.network.bridge.name.  Docker still names that bridge from the
+# first 12 hexadecimal characters of its immutable network ID.  Accept the
+# explicit option when Docker provides it, otherwise derive only that canonical
+# name and immediately prove both the interface and its gateway below.  Never
+# accept an arbitrary host interface (for example docker0, WireGuard, or a
+# public NIC) as a fallback.
+bridge_option="$("$DOCKER_BIN" network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$NETWORK" 2>/dev/null)" || die 'could not inspect ARTEX bridge interface'
+if [[ -n "$bridge_option" && "$bridge_option" != '<no value>' ]]; then
+  BRIDGE_IFACE="$bridge_option"
+  # Preserve supported explicit Docker bridge names.  The interface/gateway
+  # proof below remains mandatory, so this does not accept docker0, WireGuard,
+  # or a public NIC merely because its name resembles a Docker bridge.
+  [[ "$BRIDGE_IFACE" =~ ^br-[A-Za-z0-9]+$ ]] || die 'ARTEX bridge interface is not a user-defined bridge name'
+else
+  network_id="$("$DOCKER_BIN" network inspect -f '{{.Id}}' "$NETWORK" 2>/dev/null)" || die 'could not inspect ARTEX network ID'
+  [[ "$network_id" =~ ^[0-9a-f]{64}$ ]] || die 'ARTEX network ID is not a canonical Docker ID'
+  BRIDGE_IFACE="br-${network_id:0:12}"
+  [[ "$BRIDGE_IFACE" =~ ^br-[0-9a-f]{12}$ ]] || die 'derived ARTEX bridge interface is not canonical'
+fi
 "$IP_BIN" link show dev "$BRIDGE_IFACE" >/dev/null 2>&1 || die 'ARTEX bridge interface does not exist on this host'
 assert_bridge_gateway_is_assigned
   assert_proxy_port_is_privileged
