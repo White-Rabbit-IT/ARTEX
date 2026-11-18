@@ -22,10 +22,10 @@ type operatorReadinessResponse struct {
 }
 
 type operatorReadinessPolicy struct {
-	TargetGateRequired       bool                    `json:"target_gate_required"`
-	UntrustedOutputBoundary  bool                    `json:"untrusted_output_boundary"`
-	TaskBudget               operatorReadinessBudget `json:"task_budget"`
-	IntentBudget             operatorReadinessBudget `json:"intent_budget"`
+	TargetGateRequired      bool                    `json:"target_gate_required"`
+	UntrustedOutputBoundary bool                    `json:"untrusted_output_boundary"`
+	TaskBudget              operatorReadinessBudget `json:"task_budget"`
+	IntentBudget            operatorReadinessBudget `json:"intent_budget"`
 }
 
 // nil denotes ARTEX's normal unlimited dimension. It is intentionally not the
@@ -37,25 +37,25 @@ type operatorReadinessBudget struct {
 }
 
 type operatorReadinessSettings struct {
-	NoiseProfile              string `json:"noise_profile"`
-	Workers                   int    `json:"workers"`
-	TaskConcurrencyEnabled    bool   `json:"task_concurrency_enabled"`
-	TaskConcurrencyLimit      int    `json:"task_concurrency_limit"`
-	ConstraintsInjectPlanner  bool   `json:"constraints_inject_planner"`
-	ConstraintsInjectWorker   bool   `json:"constraints_inject_worker"`
-	TrafficCapture            bool   `json:"traffic_capture"`
-	AgentTrafficBinding       bool   `json:"agent_traffic_binding"`
-	LLMRecord                 bool   `json:"llm_record"`
-	WebSearchEnabled          bool   `json:"web_search_enabled"`
-	GlobalProxySet            bool   `json:"global_proxy_set"`
-	WebSearchProxySet         bool   `json:"web_search_proxy_set"`
-	LLMPoolEnabled            bool   `json:"llm_pool_enabled"`
-	LLMPoolBindFallback       bool   `json:"llm_pool_bind_fallback"`
+	NoiseProfile             string `json:"noise_profile"`
+	Workers                  int    `json:"workers"`
+	TaskConcurrencyEnabled   bool   `json:"task_concurrency_enabled"`
+	TaskConcurrencyLimit     int    `json:"task_concurrency_limit"`
+	ConstraintsInjectPlanner bool   `json:"constraints_inject_planner"`
+	ConstraintsInjectWorker  bool   `json:"constraints_inject_worker"`
+	TrafficCapture           bool   `json:"traffic_capture"`
+	AgentTrafficBinding      bool   `json:"agent_traffic_binding"`
+	LLMRecord                bool   `json:"llm_record"`
+	WebSearchEnabled         bool   `json:"web_search_enabled"`
+	GlobalProxySet           bool   `json:"global_proxy_set"`
+	WebSearchProxySet        bool   `json:"web_search_proxy_set"`
+	LLMPoolEnabled           bool   `json:"llm_pool_enabled"`
+	LLMPoolBindFallback      bool   `json:"llm_pool_bind_fallback"`
 }
 
 type operatorReadinessBootstrap struct {
-	SyntheticCalibration string                                  `json:"synthetic_calibration"`
-	WorkflowTemplates    db.OperatorReadinessTemplateStatus      `json:"workflow_templates"`
+	SyntheticCalibration string                             `json:"synthetic_calibration"`
+	WorkflowTemplates    db.OperatorReadinessTemplateStatus `json:"workflow_templates"`
 }
 
 type operatorReadinessHermes struct {
