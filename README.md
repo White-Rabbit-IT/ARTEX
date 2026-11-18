@@ -1,4 +1,4 @@
-ύλ\ώθ~)^wψ¦r‰ίΚV§vΘewΉώλ+ώΘZ­οβ™Κ'~(?x­‰©bΝκΝΆΛ…ψ¥zέ·¶ς<div align="center">
+<div align="center">
 
 <img src="web/public/logo.svg" width="84" alt="ARTEX logo" />
 

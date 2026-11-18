@@ -1,4 +1,4 @@
-ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò# Authorized research operator baseline
+# Authorized research operator baseline
 
 This is a deployment baseline for an ARTEX installation used for authorized,
 evidence-led security research. It joins the controls otherwise described
