@@ -30,6 +30,7 @@ import type {
   InterceptPending,
   LLMProfile,
   MCPServer,
+  OperatorReadiness,
   Settings,
   SkillItem,
   Stats,
@@ -128,6 +129,172 @@ function SectionTitle({
   );
 }
 
+type ReadinessTone = "good" | "warn" | "neutral";
+
+const readinessToneClass: Record<ReadinessTone, string> = {
+  good: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+  warn: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+  neutral: "text-muted-foreground",
+};
+
+function ReadinessRow({
+  label,
+  value,
+  tone = "neutral",
+  href,
+}: {
+  label: string;
+  value: string;
+  tone?: ReadinessTone;
+  href?: string;
+}) {
+  const content = (
+    <>
+      <span className="min-w-0 text-[10px] text-muted-foreground">{label}</span>
+      <span className="flex shrink-0 items-center gap-1">
+        <Badge variant="outline" className={cn("max-w-48 truncate text-[10px]", readinessToneClass[tone])}>
+          {value}
+        </Badge>
+        {href && <ArrowUpRightIcon className="size-3 text-muted-foreground" />}
+      </span>
+    </>
+  );
+
+  const className = "flex min-w-0 items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2";
+  return href ? (
+    <Link href={href} className={cn(className, "hover:bg-muted/40")}>
+      {content}
+    </Link>
+  ) : (
+    <div className={className}>{content}</div>
+  );
+}
+
+function fmtReadinessBudget(value: number | null, unit: "tokens" | "turns") {
+  if (value === null) return "Unlimited";
+  return unit === "tokens" ? `${fmtTokens(value)} tokens` : `${value} turns`;
+}
+
+function OperatorReadinessCard({ readiness }: { readiness: OperatorReadiness | null }) {
+  if (!readiness) {
+    return (
+      <Card className="p-4">
+        <SectionTitle icon={ShieldCheckIcon} sub="Read-only">
+          Operator readiness
+        </SectionTitle>
+        <div className="rounded-lg border bg-muted/10 px-3 py-3 text-muted-foreground text-xs">
+          Readiness status is unavailable. Refresh after the ARTEX server is updated.
+        </div>
+      </Card>
+    );
+  }
+
+  const { policy, settings, bootstrap, hermes } = readiness;
+  const conservativeExecution =
+    settings.noise_profile === "quiet" &&
+    settings.workers === 1 &&
+    settings.task_concurrency_enabled &&
+    settings.task_concurrency_limit === 1 &&
+    settings.constraints_inject_planner &&
+    settings.constraints_inject_worker;
+  const minimalDataPath =
+    !settings.traffic_capture &&
+    !settings.agent_traffic_binding &&
+    !settings.llm_record &&
+    !settings.web_search_enabled &&
+    !settings.global_proxy_set &&
+    !settings.web_search_proxy_set &&
+    !settings.llm_pool_enabled &&
+    !settings.llm_pool_bind_fallback;
+  let calibrationValue = "Review CAL-00";
+  if (bootstrap.synthetic_calibration === "present_terminal") {
+    calibrationValue = "Terminal receipt present";
+  } else if (bootstrap.synthetic_calibration === "missing") {
+    calibrationValue = "Create CAL-00";
+  }
+  const templateValue = bootstrap.workflow_templates.conflict
+    ? "Review template conflict"
+    : `${bootstrap.workflow_templates.matching}/${bootstrap.workflow_templates.required} templates`;
+
+  return (
+    <Card className="p-4">
+      <SectionTitle icon={ShieldCheckIcon} sub="Read-only, no target activity">
+        Operator readiness
+      </SectionTitle>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+        <ReadinessRow
+          label="Target-gate policy"
+          value={policy.target_gate_required ? "Required" : "Not required"}
+          tone={policy.target_gate_required ? "good" : "warn"}
+          href="/system/settings"
+        />
+        <ReadinessRow
+          label="Execution controls"
+          value={conservativeExecution ? "Quiet · 1 worker / 1 task" : "Review settings"}
+          tone={conservativeExecution ? "good" : "warn"}
+          href="/system/settings"
+        />
+        <ReadinessRow
+          label="Data-path controls"
+          value={minimalDataPath ? "Capture, recording, and web search off" : "Review settings"}
+          tone={minimalDataPath ? "good" : "warn"}
+          href="/system/settings"
+        />
+        <ReadinessRow
+          label="Output boundary"
+          value={policy.untrusted_output_boundary ? "Enabled" : "Disabled"}
+          tone={policy.untrusted_output_boundary ? "good" : "warn"}
+          href="/system/settings"
+        />
+        <ReadinessRow
+          label="Run budgets"
+          value={`${fmtReadinessBudget(policy.task_budget.tokens, "tokens")} / ${fmtReadinessBudget(
+            policy.task_budget.turns,
+            "turns",
+          )}`}
+          tone={policy.task_budget.tokens !== null || policy.task_budget.turns !== null ? "good" : "warn"}
+        />
+        <ReadinessRow
+          label="Intent budgets"
+          value={`${fmtReadinessBudget(policy.intent_budget.tokens, "tokens")} / ${fmtReadinessBudget(
+            policy.intent_budget.turns,
+            "turns",
+          )}`}
+          tone={policy.intent_budget.tokens !== null || policy.intent_budget.turns !== null ? "good" : "warn"}
+        />
+        <ReadinessRow
+          label="CAL-00"
+          value={calibrationValue}
+          tone={bootstrap.synthetic_calibration === "present_terminal" ? "good" : "warn"}
+          href="/function/tasks"
+        />
+        <ReadinessRow
+          label="Safe templates"
+          value={templateValue}
+          tone={bootstrap.workflow_templates.complete && !bootstrap.workflow_templates.conflict ? "good" : "warn"}
+          href="/function/tasks"
+        />
+        <ReadinessRow
+          label="Hermes profile"
+          value={hermes.subscription_profile_present ? "Present" : "Absent"}
+          href="/system/llm"
+        />
+        <ReadinessRow
+          label="Agent execution"
+          value={hermes.agent_execution_enabled ? "Opt-in present" : "Opt-in absent"}
+          tone={hermes.agent_execution_enabled ? "warn" : "neutral"}
+          href="/system/llm"
+        />
+      </div>
+      <p className="mt-3 text-[10px] text-muted-foreground">
+        A saved Hermes profile or agent-execution opt-in is not a connectivity, provider-policy, target-approval, or
+        execution result. Connection-test outcomes are not recorded here; use the LLM view to run the fixed synthetic
+        test.
+      </p>
+    </Card>
+  );
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -148,6 +315,7 @@ export default function DashboardPage() {
   const [skills, setSkills] = React.useState<SkillItem[]>([]);
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
+  const [operatorReadiness, setOperatorReadiness] = React.useState<OperatorReadiness | null>(null);
 
   // The task list is the most expensive dashboard source. Poll it independently
   // so a large history cannot hold back every other dashboard panel.
@@ -224,16 +392,20 @@ export default function DashboardPage() {
     let alive = true;
     const load = async () => {
       try {
-        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
-          api.traffic(0, 50),
-          api.assetCounts(),
-          api.agents(),
-          api.mcpServers(),
-          api.skills(),
-          api.tools(),
-          api.llmProfiles(),
-          api.usageStats(365),
-        ]);
+        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage, readiness] =
+          await Promise.all([
+            api.traffic(0, 50),
+            api.assetCounts(),
+            api.agents(),
+            api.mcpServers(),
+            api.skills(),
+            api.tools(),
+            api.llmProfiles(),
+            api.usageStats(365),
+            // A server deployed before the readiness endpoint is available must not
+            // prevent the existing dashboard sources from refreshing.
+            api.operatorReadiness().catch(() => null),
+          ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
         setAssetCounts(counts ?? {});
@@ -243,6 +415,7 @@ export default function DashboardPage() {
         setTools(toolList);
         setLLMProfiles(profileList);
         setUsageStats(usage);
+        setOperatorReadiness(readiness);
       } catch {
         /* transient errors */
       }
@@ -954,7 +1127,10 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* ── Row 4: Task table ── */}
+      {/* ── Row 4: deployment posture ── */}
+      <OperatorReadinessCard readiness={operatorReadiness} />
+
+      {/* ── Row 5: Task table ── */}
       <Card className="overflow-hidden p-0">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-1.5 text-xs font-semibold">
@@ -1042,7 +1218,7 @@ export default function DashboardPage() {
         </table>
       </Card>
 
-      {/* ── Row 5: Asset distribution | Traffic status codes | Interception & pending approvals ── */}
+      {/* ── Row 6: Asset distribution | Traffic status codes | Interception & pending approvals ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {/* Asset distribution */}
         <Card className="p-4">

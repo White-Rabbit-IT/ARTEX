@@ -1034,6 +1034,47 @@ export interface Settings {
 
 export type NoiseProfileName = "off" | "quiet" | "balanced" | "aggressive";
 
+// Read-only, deliberately aggregate operator posture. The server never returns
+// provider endpoints, model IDs, proxy values, task text, targets, or secrets
+// through this shape.
+export interface OperatorReadiness {
+  policy: {
+    target_gate_required: boolean;
+    untrusted_output_boundary: boolean;
+    task_budget: { tokens: number | null; turns: number | null };
+    intent_budget: { tokens: number | null; turns: number | null };
+  };
+  settings: {
+    noise_profile: NoiseProfileName;
+    workers: number;
+    task_concurrency_enabled: boolean;
+    task_concurrency_limit: number;
+    constraints_inject_planner: boolean;
+    constraints_inject_worker: boolean;
+    traffic_capture: boolean;
+    agent_traffic_binding: boolean;
+    llm_record: boolean;
+    web_search_enabled: boolean;
+    global_proxy_set: boolean;
+    web_search_proxy_set: boolean;
+    llm_pool_enabled: boolean;
+    llm_pool_bind_fallback: boolean;
+  };
+  bootstrap: {
+    synthetic_calibration: "missing" | "present_terminal" | "unexpected_state";
+    workflow_templates: {
+      required: number;
+      matching: number;
+      complete: boolean;
+      conflict: boolean;
+    };
+  };
+  hermes: {
+    subscription_profile_present: boolean;
+    agent_execution_enabled: boolean;
+  };
+}
+
 // GET /api/settings/noise: the current profile and its per-host counters (current minute, no reset).
 export interface NoiseStatus {
   profile: NoiseProfileName;
