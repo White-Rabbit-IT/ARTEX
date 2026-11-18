@@ -752,6 +752,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
+	// Authenticated, aggregate-only deployment status for the dashboard. This
+	// endpoint must remain observational; it is not a provider/target control.
+	mux.HandleFunc("GET /api/operator-readiness", s.operatorReadiness)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)
 	mux.HandleFunc("GET /api/logs/stream", s.streamLogs)

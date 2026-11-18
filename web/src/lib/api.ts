@@ -71,6 +71,7 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  OperatorReadiness,
   PromptVar,
   PromptVersion,
   ResearchWorkflowTemplatesResult,
@@ -891,6 +892,9 @@ export const api = {
 
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
+  // A non-secret, read-only posture summary for the dashboard. It intentionally
+  // reports only aggregate states, never task/provider/network details.
+  operatorReadiness: () => get<OperatorReadiness>(`/operator-readiness`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   noiseStatus: () => get<import("@/lib/types").NoiseStatus>(`/settings/noise`),
   // Run a real "test" search with the given (or saved) config to verify it works.
