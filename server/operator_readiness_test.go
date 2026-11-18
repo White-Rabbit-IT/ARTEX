@@ -31,17 +31,14 @@ func operatorReadinessRequest(t *testing.T, g *gateServer, authenticated bool) (
 
 func operatorReadinessCounts(t *testing.T, g *gateServer) map[string]int {
 	t.Helper()
-	counts := make(map[string]int, 4)
-	for table := range map[string]struct{}{
-		"tasks":          {},
-		"explorations":   {},
-		"activity":       {},
-		"task_templates": {},
-		"llm_profiles":   {},
-	} {
-		if err := g.m.pg.QueryRow("SELECT count(*) FROM " + table).Scan(&counts[table]); err != nil {
+	tables := []string{"tasks", "explorations", "activity", "task_templates", "llm_profiles"}
+	counts := make(map[string]int, len(tables))
+	for _, table := range tables {
+		var count int
+		if err := g.m.pg.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)
 		}
+		counts[table] = count
 	}
 	return counts
 }
