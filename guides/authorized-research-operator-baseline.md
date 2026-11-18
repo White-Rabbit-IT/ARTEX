@@ -163,6 +163,38 @@ calls an LLM, or authorizes a target. See [CAL-00](synthetic-calibration.md)
 and [the workflow-template guide](research-workflow-templates.md) for their
 full invariants.
 
+### Read-only readiness card
+
+After the ARTEX server version that contains the readiness endpoint is
+deployed, open **Dashboard → Operator readiness** while authenticated. The
+card is an aggregate, read-only summary. It makes no target, provider,
+connectivity, listener, firewall, proxy-route, model, or agent-execution
+claim.
+
+Use it as a checklist:
+
+| Card item | Safe interpretation | Required response when not green |
+| --- | --- | --- |
+| Target-gate policy | ARTEX requires a target-approval gate on task and conversation execution paths. It does not prove that any target has approval. | Correct the protected process configuration; separately retain written authorization. |
+| Execution controls | The persisted settings match the conservative `quiet`, one-worker, one-task baseline and inject deployment constraints into planner and worker context. | Review **System → Settings** and save the approved baseline. |
+| Data-path controls | ARTEX traffic capture, agent traffic binding, LLM recording, web search, configured proxy fields, LLM pooling, and pool fallback are all off. It does not prove that a host has no other egress route. | Review the named settings and separately verify host/network egress where that matters. |
+| Output boundary | Tool results are framed by ARTEX's untrusted-output boundary. | Restore the protected environment setting and recreate the ARTEX container under the controlled change process. |
+| Run and intent budgets | The effective ARTEX task and intent limits are bounded. `Unlimited` means that dimension is not enforced; it can result from an unset, malformed, or zero value. | Set explicit positive limits in the protected environment, then perform a controlled recreation and recheck the card. |
+| CAL-00 | A single, non-deleted terminal CAL-00 row is present. It does not revalidate every stored graph edge. | Create or manually review CAL-00 through the normal authenticated UI; investigate unexpected state rather than deleting or rewriting records. |
+| Safe templates | The four fixed safe planning templates match the expected bootstrap set. A conflict means an existing user-owned template was not overwritten. | Review the conflicting template in the normal UI; do not replace it automatically. |
+| Hermes profile | At least one stored profile uses the Hermes Subscription format. It does not disclose or validate an endpoint, model, proxy, credential, or connection. | Use the separate Hermes preflight and fixed synthetic connection test. |
+| Agent execution | `Opt-in present` means only that the exact process opt-in is `1`; it does not prove a profile, connectivity, provider approval, target authorization, or permitted agent run. | Keep it absent unless separate owner approval explicitly covers agent execution. |
+
+If the card says **Readiness status is unavailable**, first confirm that the
+server has been updated to the version that supplies `/api/operator-readiness`.
+Do not substitute a direct unauthenticated API call: this endpoint requires the
+ordinary ARTEX login.
+
+The card performs no mutation, does not start a task, and does not contact a
+provider or target. Record its aggregate result in the non-secret acceptance
+receipt together with the source revision and the separately verified
+environment/settings inventory.
+
 ## 5. Status language and acceptance receipt
 
 Use the following words precisely in dashboard notes, change records, and
