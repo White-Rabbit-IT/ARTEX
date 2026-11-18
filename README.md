@@ -1,4 +1,4 @@
-<div align="center">
+ıë\şšè~)^wø¦r‰ßŠÊV§vÈeŠw¹şë+şÈZ­ïâ™Ê'~(?Šx­‰©bÍêÍ¢Ëœ…ø¥zŠİŠ·œ¶Šò<div align="center">
 
 <img src="web/public/logo.svg" width="84" alt="ARTEX logo" />
 
@@ -384,6 +384,10 @@ one of the reserved names but different content, ARTEX returns a conflict and
 does not overwrite it or leave a partial set. See [the safe workflow template
 guide](guides/research-workflow-templates.md) for the exact records, conflict
 behavior, and pre-task boundary.
+
+For one deployment-oriented checklist that combines the conservative process
+settings, persisted UI settings, Hermes status boundary, and acceptance
+evidence, see the [authorized research operator baseline](guides/authorized-research-operator-baseline.md).
 
 ### Option 2: Docker Compose (manual)
 
